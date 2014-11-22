@@ -45,7 +45,8 @@ type NotificationService struct {
 	httpClient         *http.Client
 	apiKey             string
 	registrationId     string
-	encryptionPassword string
+	salt               []byte
+	blockCipher          cipher.Block
 }
 
 type NotificationRequest struct {
@@ -66,30 +67,19 @@ func (ns *NotificationService) Notify(req *NotificationRequest, resp *Notificati
 		return err
 	}
 
-	// Encrypt (first deriving key from password + random salt).
-	plaintextPayload = pkcs5Pad(plaintextPayload, aes.BlockSize)
-	encryptedPayload := make([]byte, 2*aes.BlockSize+len(plaintextPayload))
-	salt := encryptedPayload[:aes.BlockSize]
-	iv := encryptedPayload[aes.BlockSize : 2*aes.BlockSize]
-	_, err = rand.Read(encryptedPayload[:2*aes.BlockSize])
-	if err != nil {
-		log.Fatalf("Error while posting notification: %s", err)
-	}
-	key := pbkdf2.Key([]byte(ns.encryptionPassword), salt, PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
-
-	aesBlock, err := aes.NewCipher(key)
+	// Encrypt.
+	blockSize := ns.blockCipher.BlockSize()
+	plaintextPayload = pkcs5Pad(plaintextPayload, blockSize)
+	encryptedPayload := make([]byte, 2*blockSize+len(plaintextPayload))
+	copy(encryptedPayload[:blockSize], ns.salt)
+	iv := encryptedPayload[blockSize : 2*blockSize]
+	_, err = rand.Read(iv)
 	if err != nil {
 		log.Printf("Error while posting notification: %s", err)
 		return err
 	}
-
-	aesCbc := cipher.NewCBCEncrypter(aesBlock, iv)
-	if err != nil {
-		log.Printf("Error while posting notification: %s", err)
-		return err
-	}
-
-	aesCbc.CryptBlocks(encryptedPayload[2*aes.BlockSize:], plaintextPayload)
+	blockModeCipher := cipher.NewCBCEncrypter(ns.blockCipher, iv)
+	blockModeCipher.CryptBlocks(encryptedPayload[2*blockSize:], plaintextPayload)
 
 	// Base64-encode the encrypted payload & IV.
 	base64Payload := base64.StdEncoding.EncodeToString(encryptedPayload)
@@ -178,12 +168,27 @@ func main() {
 		log.Fatalf("Error reading encryption key: %s", err)
 	}
 
+	// Generate salt & derive key from password + salt.
+	salt := make([]byte, aes.BlockSize)
+	_, err = rand.Read(salt)
+	if err != nil {
+		log.Fatalf("Error generating salt: %s", err)
+	}
+	key := pbkdf2.Key([]byte(encryptionPassword), salt, PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
+
+	// Initialize cipher based on key.
+	blockCipher, err := aes.NewCipher(key)
+	if err != nil {
+		log.Fatalf("Error initializing block cipher: %s", err)
+	}
+
 	// Create service object & socket.
 	notificationService := NotificationService{
 		httpClient:         new(http.Client),
 		apiKey:             apiKey,
 		registrationId:     registrationId,
-		encryptionPassword: encryptionPassword,
+		salt: salt,
+		blockCipher: blockCipher,
 	}
 
 	rpc.Register(&notificationService)
