@@ -10,20 +10,35 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
+import android.util.Pair;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class GcmIntentService extends IntentService {
 
@@ -33,6 +48,8 @@ public class GcmIntentService extends IntentService {
     private static final int AES_KEY_SIZE = 16; // TODO(bran): find a better source for this
     private static final int AES_BLOCK_SIZE = 16; // TODO(bran): find a better source for this
     private static final int PBKDF2_ITERATION_COUNT = 4096;
+    private static final String CACHED_KEY_FILENAME = "cache.key";
+    private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
 
     private final AtomicInteger nextId;
 
@@ -55,14 +72,12 @@ public class GcmIntentService extends IntentService {
                 // Base64-decode to encrypted payload bytes.
                 byte[] encryptedPayload = Base64.decode(base64Payload, Base64.DEFAULT);
 
-                // Derive encryption key from password and salt, pull IV from payload.
-                String password = getPassword();
+                // Read salt and IV from encrypted payload.
                 byte[] salt = Arrays.copyOf(encryptedPayload, AES_BLOCK_SIZE);
-                PBEKeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATION_COUNT, 8 * AES_KEY_SIZE);
-                SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1");
-                SecretKey key = secretKeyFactory.generateSecret(keySpec);
-
                 IvParameterSpec iv = new IvParameterSpec(encryptedPayload, AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+
+                // Derive the key (or use the cached key).
+                SecretKey key = getKey(salt);
 
                 // Decrypt the message.
                 Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
@@ -76,8 +91,7 @@ public class GcmIntentService extends IntentService {
 
                 sendNotification(title, text);
             }
-        } catch (Exception exception) {
-            // TODO(bran): use a multi-catch instead
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException | NoSuchPaddingException | InvalidKeyException | JSONException | BadPaddingException | InvalidAlgorithmParameterException | IllegalBlockSizeException exception) {
             Log.e(LOG_TAG, "Error showing notification", exception);
         } finally {
             GcmBroadcastReceiver.completeWakefulIntent(intent);
@@ -100,6 +114,59 @@ public class GcmIntentService extends IntentService {
                 .build();
 
         notificationManager.notify(notificationId, notification);
+    }
+
+    private SecretKey getKey(byte[] salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        // Try to use cached key first.
+        Pair<byte[], SecretKey> cachedSaltAndKey = getCachedSaltAndKey();
+        if (cachedSaltAndKey != null && Arrays.equals(salt, cachedSaltAndKey.first)) {
+            return cachedSaltAndKey.second;
+        }
+
+        // Derive key, store it in the cache, and return it.
+        Log.i(LOG_TAG, "Cached key missing or salt mismatch, deriving key");
+        String password = getPassword();
+        PBEKeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATION_COUNT, 8 * AES_KEY_SIZE);
+        SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(KEY_ALGORITHM);
+        SecretKey key = secretKeyFactory.generateSecret(keySpec);
+        storeCachedSaltAndKey(salt, key);
+        return key;
+    }
+
+    private Pair<byte[], SecretKey> getCachedSaltAndKey() {
+        File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
+        try (FileInputStream cachedKeyStream = new FileInputStream(cachedKeyFile)) {
+            byte[] salt = new byte[AES_BLOCK_SIZE];
+            if (cachedKeyStream.read(salt) != AES_BLOCK_SIZE) {
+                return null;
+            }
+
+            byte[] keyMaterial = new byte[AES_KEY_SIZE];
+            if (cachedKeyStream.read(keyMaterial) != AES_KEY_SIZE) {
+                return null;
+            }
+
+            SecretKey key = new SecretKeySpec(keyMaterial, KEY_ALGORITHM);
+            return new Pair<>(salt, key);
+        } catch (IOException exception) {
+            Log.w(LOG_TAG, "Error reading cached key", exception);
+            return null;
+        }
+    }
+
+    private boolean storeCachedSaltAndKey(byte[] salt, SecretKey key) {
+        assert(salt.length == AES_BLOCK_SIZE);
+
+        File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
+        try (FileOutputStream cachedKeyStream = new FileOutputStream(cachedKeyFile)) {
+            cachedKeyStream.write(salt);
+            byte[] keyMaterial = key.getEncoded();
+            cachedKeyStream.write(keyMaterial);
+            return true;
+        } catch (IOException exception) {
+            Log.w(LOG_TAG, "Error storing cached key", exception);
+            return false;
+        }
     }
 
     private String getPassword() {

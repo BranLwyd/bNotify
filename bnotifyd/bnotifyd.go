@@ -42,11 +42,11 @@ var (
 
 // Types
 type NotificationService struct {
-	httpClient         *http.Client
-	apiKey             string
-	registrationId     string
-	salt               []byte
-	blockCipher          cipher.Block
+	httpClient     *http.Client
+	apiKey         string
+	registrationId string
+	salt           []byte
+	blockCipher    cipher.Block
 }
 
 type NotificationRequest struct {
@@ -81,7 +81,7 @@ func (ns *NotificationService) Notify(req *NotificationRequest, resp *Notificati
 	blockModeCipher := cipher.NewCBCEncrypter(ns.blockCipher, iv)
 	blockModeCipher.CryptBlocks(encryptedPayload[2*blockSize:], plaintextPayload)
 
-	// Base64-encode the encrypted payload & IV.
+	// Base64-encode the encrypted payload.
 	base64Payload := base64.StdEncoding.EncodeToString(encryptedPayload)
 
 	err = postNotification(ns.httpClient, ns.apiKey, ns.registrationId, string(base64Payload))
@@ -184,11 +184,11 @@ func main() {
 
 	// Create service object & socket.
 	notificationService := NotificationService{
-		httpClient:         new(http.Client),
-		apiKey:             apiKey,
-		registrationId:     registrationId,
-		salt: salt,
-		blockCipher: blockCipher,
+		httpClient:     new(http.Client),
+		apiKey:         apiKey,
+		registrationId: registrationId,
+		salt:           salt,
+		blockCipher:    blockCipher,
 	}
 
 	rpc.Register(&notificationService)
