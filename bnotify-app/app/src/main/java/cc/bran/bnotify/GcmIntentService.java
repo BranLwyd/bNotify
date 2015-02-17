@@ -21,11 +21,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
+import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,7 +35,7 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
-import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -45,8 +44,10 @@ public class GcmIntentService extends IntentService {
     private static final String LOG_TAG = "GcmIntentService";
     private static final String PROPERTY_PASSWORD = "password";
     private static final String PAYLOAD_KEY = "payload";
-    private static final int AES_KEY_SIZE = 16; // TODO(bran): find a better source for this
-    private static final int AES_BLOCK_SIZE = 16; // TODO(bran): find a better source for this
+    private static final int AES_KEY_SIZE = 16;
+    private static final int SALT_SIZE = 16;
+    private static final int GCM_OVERHEAD_SIZE = 16;
+    private static final int GCM_NONCE_SIZE = 12;
     private static final int PBKDF2_ITERATION_COUNT = 4096;
     private static final String CACHED_KEY_FILENAME = "cache.key";
     private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
@@ -70,28 +71,28 @@ public class GcmIntentService extends IntentService {
                 String base64Payload = extras.getString(PAYLOAD_KEY);
 
                 // Base64-decode to encrypted payload bytes.
-                byte[] encryptedPayload = Base64.decode(base64Payload, Base64.DEFAULT);
+                byte[] payload = Base64.decode(base64Payload, Base64.DEFAULT);
 
-                // Read salt and IV from encrypted payload.
-                byte[] salt = Arrays.copyOf(encryptedPayload, AES_BLOCK_SIZE);
-                IvParameterSpec iv = new IvParameterSpec(encryptedPayload, AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+                // Read salt and IV from encrypted payload, derive key, and create parameters.
+                byte[] salt = Arrays.copyOf(payload, SALT_SIZE);
+                GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(8*GCM_OVERHEAD_SIZE, payload, SALT_SIZE, GCM_NONCE_SIZE);
 
                 // Derive the key (or use the cached key).
                 SecretKey key = getKey(salt);
 
                 // Decrypt the message.
-                Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-                cipher.init(Cipher.DECRYPT_MODE, key, iv);
-                byte[] payload = cipher.doFinal(encryptedPayload, 2*AES_BLOCK_SIZE, encryptedPayload.length - 2*AES_BLOCK_SIZE);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
+                cipher.init(Cipher.DECRYPT_MODE, key, gcmParameterSpec);
+                byte[] plaintextPayload = cipher.doFinal(payload, SALT_SIZE + GCM_NONCE_SIZE, payload.length - SALT_SIZE - GCM_NONCE_SIZE);
 
                 // Parse the payload.
-                JSONObject message = new JSONObject(new String(payload, "UTF-8"));
+                JSONObject message = new JSONObject(new String(plaintextPayload, "UTF-8"));
                 String title = message.getString("title");
                 String text = message.getString("text");
 
                 sendNotification(title, text);
             }
-        } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException | NoSuchPaddingException | InvalidKeyException | JSONException | BadPaddingException | InvalidAlgorithmParameterException | IllegalBlockSizeException exception) {
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException | NoSuchPaddingException | InvalidKeyException | JSONException | BadPaddingException | InvalidAlgorithmParameterException | IllegalBlockSizeException | IllegalArgumentException | NoSuchProviderException exception) {
             Log.e(LOG_TAG, "Error showing notification", exception);
         } finally {
             GcmBroadcastReceiver.completeWakefulIntent(intent);
@@ -130,14 +131,21 @@ public class GcmIntentService extends IntentService {
         SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(KEY_ALGORITHM);
         SecretKey key = secretKeyFactory.generateSecret(keySpec);
         storeCachedSaltAndKey(salt, key);
+
+        // Encode and de-encode key -- otherwise we get an error:
+        //   java.security.InvalidAlgorithmParameterException: no IV set when one expected
+        // TODO(bran): why is this necessary? (working around bug in BC? unlikely...)
+        byte[] keyMaterial = key.getEncoded();
+        key = new SecretKeySpec(keyMaterial, KEY_ALGORITHM);
+
         return key;
     }
 
     private Pair<byte[], SecretKey> getCachedSaltAndKey() {
         File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
         try (FileInputStream cachedKeyStream = new FileInputStream(cachedKeyFile)) {
-            byte[] salt = new byte[AES_BLOCK_SIZE];
-            if (cachedKeyStream.read(salt) != AES_BLOCK_SIZE) {
+            byte[] salt = new byte[SALT_SIZE];
+            if (cachedKeyStream.read(salt) != SALT_SIZE) {
                 return null;
             }
 
@@ -155,7 +163,7 @@ public class GcmIntentService extends IntentService {
     }
 
     private boolean storeCachedSaltAndKey(byte[] salt, SecretKey key) {
-        assert(salt.length == AES_BLOCK_SIZE);
+        assert(salt.length == SALT_SIZE);
 
         File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
         try (FileOutputStream cachedKeyStream = new FileOutputStream(cachedKeyFile)) {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"code.google.com/p/go.crypto/pbkdf2"
 	"crypto/aes"
 	"crypto/cipher"
@@ -29,6 +28,7 @@ const (
 	BNOTIFY_PACKAGE_NAME = "cc.bran.bnotify"
 	GCM_SEND_ADDRESS     = "https://android.googleapis.com/gcm/send"
 	AES_KEY_SIZE         = 16
+	SALT_SIZE            = 16
 	PBKDF2_ITER_COUNT    = 4096
 )
 
@@ -46,7 +46,7 @@ type NotificationService struct {
 	apiKey         string
 	registrationId string
 	salt           []byte
-	blockCipher    cipher.Block
+	gcmCipher      cipher.AEAD
 }
 
 type NotificationRequest struct {
@@ -58,8 +58,6 @@ type NotificationResponse struct{}
 
 // Code
 func (ns *NotificationService) Notify(req *NotificationRequest, resp *NotificationResponse) error {
-	log.Printf("Got request: {title='%s', text='%s'}", req.Title, req.Text)
-
 	// Marshal request into JSON.
 	plaintextPayload, err := json.Marshal(req)
 	if err != nil {
@@ -68,21 +66,22 @@ func (ns *NotificationService) Notify(req *NotificationRequest, resp *Notificati
 	}
 
 	// Encrypt.
-	blockSize := ns.blockCipher.BlockSize()
-	plaintextPayload = pkcs5Pad(plaintextPayload, blockSize)
-	encryptedPayload := make([]byte, 2*blockSize+len(plaintextPayload))
-	copy(encryptedPayload[:blockSize], ns.salt)
-	iv := encryptedPayload[blockSize : 2*blockSize]
-	_, err = rand.Read(iv)
+	nonce := make([]byte, ns.gcmCipher.NonceSize())
+	_, err = rand.Read(nonce)
 	if err != nil {
 		log.Printf("Error while posting notification: %s", err)
 		return err
 	}
-	blockModeCipher := cipher.NewCBCEncrypter(ns.blockCipher, iv)
-	blockModeCipher.CryptBlocks(encryptedPayload[2*blockSize:], plaintextPayload)
+	encryptedData := ns.gcmCipher.Seal(nil, nonce, plaintextPayload, nil)
 
-	// Base64-encode the encrypted payload.
-	base64Payload := base64.StdEncoding.EncodeToString(encryptedPayload)
+	// Fill out final payload: salt || nonce || encryptedData
+	payload := make([]byte, len(ns.salt)+ns.gcmCipher.NonceSize()+len(encryptedData))
+	copy(payload, ns.salt)
+	copy(payload[len(ns.salt):], nonce)
+	copy(payload[len(ns.salt)+len(nonce):], encryptedData)
+
+	// Base64-encode the payload.
+	base64Payload := base64.StdEncoding.EncodeToString(payload)
 
 	err = postNotification(ns.httpClient, ns.apiKey, ns.registrationId, string(base64Payload))
 	if err != nil {
@@ -91,12 +90,6 @@ func (ns *NotificationService) Notify(req *NotificationRequest, resp *Notificati
 	}
 
 	return nil
-}
-
-func pkcs5Pad(src []byte, blockSize int) []byte {
-	padding := blockSize - len(src)%blockSize
-	padtext := bytes.Repeat([]byte{byte(padding)}, padding)
-	return append(src, padtext...)
 }
 
 func postNotification(httpClient *http.Client, apiKey string, registrationId string, payload string) error {
@@ -169,7 +162,7 @@ func main() {
 	}
 
 	// Generate salt & derive key from password + salt.
-	salt := make([]byte, aes.BlockSize)
+	salt := make([]byte, SALT_SIZE)
 	_, err = rand.Read(salt)
 	if err != nil {
 		log.Fatalf("Error generating salt: %s", err)
@@ -181,6 +174,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error initializing block cipher: %s", err)
 	}
+	gcmCipher, err := cipher.NewGCM(blockCipher)
+	if err != nil {
+		log.Fatalf("Error initializing GCM cipher: %s", err)
+	}
 
 	// Create service object & socket.
 	notificationService := NotificationService{
@@ -188,7 +185,7 @@ func main() {
 		apiKey:         apiKey,
 		registrationId: registrationId,
 		salt:           salt,
-		blockCipher:    blockCipher,
+		gcmCipher:      gcmCipher,
 	}
 
 	rpc.Register(&notificationService)
