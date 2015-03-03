@@ -1,6 +1,8 @@
 package main
 
 import (
+	pb "../proto"
+
 	"bufio"
 	"code.google.com/p/go.crypto/pbkdf2"
 	"crypto/aes"
@@ -8,14 +10,15 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/golang/protobuf/proto"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
-	"net/rpc"
 	"net/url"
 	"os"
 	"os/signal"
@@ -34,62 +37,57 @@ const (
 
 // Flags
 var (
-	socketFilename        = flag.String("socket_filename", "bnotify.sock", "path of UNIX socket to listen to RPCs on")
+	port                  = flag.Int("port", 50051, "port to listen to RPCs on")
 	apiKeyFilename        = flag.String("api_key", "api.key", "filename of API key file to use")
 	encryptionKeyFilename = flag.String("encryption_key", "encryption.key", "filename of encryption key file to use")
 	registrationFilename  = flag.String("registration_id", "registration.id", "filename of the registration ID file to use")
 )
 
 // Types
-type NotificationService struct {
+type notificationService struct {
 	httpClient     *http.Client
 	apiKey         string
 	registrationId string
-	salt           []byte
+	salt           string
 	gcmCipher      cipher.AEAD
 }
 
-type NotificationRequest struct {
-	Title string `json:"title"`
-	Text  string `json:"text"`
-}
-
-type NotificationResponse struct{}
-
 // Code
-func (ns *NotificationService) Notify(req *NotificationRequest, resp *NotificationResponse) error {
-	// Marshal request into JSON.
-	plaintextPayload, err := json.Marshal(req)
+func (ns *notificationService) SendNotification(ctx context.Context, req *pb.SendNotificationRequest) (*pb.SendNotificationResponse, error) {
+	// Marshal request notification & encrypt.
+	plaintextMessage, err := proto.Marshal(req.Notification)
 	if err != nil {
 		log.Printf("Error while posting notification: %s", err)
-		return err
+		return nil, err
 	}
-
-	// Encrypt.
 	nonce := make([]byte, ns.gcmCipher.NonceSize())
 	_, err = rand.Read(nonce)
 	if err != nil {
 		log.Printf("Error while posting notification: %s", err)
-		return err
+		return nil, err
 	}
-	encryptedData := ns.gcmCipher.Seal(nil, nonce, plaintextPayload, nil)
+	message := ns.gcmCipher.Seal(nil, nonce, plaintextMessage, nil)
 
-	// Fill out final payload: salt || nonce || encryptedData
-	payload := make([]byte, len(ns.salt)+ns.gcmCipher.NonceSize()+len(encryptedData))
-	copy(payload, ns.salt)
-	copy(payload[len(ns.salt):], nonce)
-	copy(payload[len(ns.salt)+len(nonce):], encryptedData)
-
-	// Base64-encode the payload.
-	base64Payload := base64.StdEncoding.EncodeToString(payload)
-
-	err = postNotification(ns.httpClient, ns.apiKey, ns.registrationId, string(base64Payload))
+	// Fill out final envelope proto & base-64 encode into a payload.
+	envelopeProto := &pb.Envelope{
+		Message: message,
+		Salt:    []byte(ns.salt),
+		Nonce:   nonce,
+	}
+	envelopeData, err := proto.Marshal(envelopeProto)
 	if err != nil {
 		log.Printf("Error while posting notification: %s", err)
-		return err
+		return nil, err
 	}
+	payload := base64.StdEncoding.EncodeToString(envelopeData)
 
-	return nil
+	// Post the notification.
+	err = postNotification(ns.httpClient, ns.apiKey, ns.registrationId, payload)
+	if err != nil {
+		log.Printf("Error while posting notification: %s", err)
+		return nil, err
+	}
+	return &pb.SendNotificationResponse{}, nil
 }
 
 func postNotification(httpClient *http.Client, apiKey string, registrationId string, payload string) error {
@@ -179,21 +177,21 @@ func main() {
 		log.Fatalf("Error initializing GCM cipher: %s", err)
 	}
 
-	// Create service object & socket.
-	notificationService := NotificationService{
+	// Create service, socket, and gRPC server objects.
+	service := &notificationService{
 		httpClient:     new(http.Client),
 		apiKey:         apiKey,
 		registrationId: registrationId,
-		salt:           salt,
+		salt:           string(salt),
 		gcmCipher:      gcmCipher,
 	}
-
-	rpc.Register(&notificationService)
-	listener, err := net.Listen("unix", *socketFilename)
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		log.Fatalf("Error listening to %s: %s", *socketFilename, err)
+		log.Fatalf("Error listening on port %d: %s", *port, err)
 	}
 	defer listener.Close()
+	server := grpc.NewServer()
+	pb.RegisterNotificationServiceServer(server, service)
 
 	// Attempt to catch signals to shut down the listener.
 	// (this is evidently necessary to remove the socket file)
@@ -208,6 +206,6 @@ func main() {
 	}()
 
 	// Begin serving.
-	log.Printf("Listening for requests on %s...", *socketFilename)
-	rpc.Accept(listener)
+	log.Printf("Listening for requests on port %d...", *port)
+	server.Serve(listener)
 }

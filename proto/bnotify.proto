@@ -1,0 +1,39 @@
+// Protobufs used for bNotify.
+syntax = "proto3";
+
+package cc.bran.bnotify.proto;
+
+option java_package = "cc.bran.bnotify.proto";
+option java_outer_classname = "BNotifyProtos";
+
+// Service definitions.
+service NotificationService {
+    rpc SendNotification (SendNotificationRequest) returns (SendNotificationResponse) {}
+}
+
+// Service request/response messages.
+message SendNotificationRequest {
+    // The notification to send.
+    Notification notification = 1;
+}
+
+message SendNotificationResponse {
+	// Purposefully empty.
+}
+
+// Other messages.
+message Notification {
+    // Notification text.
+    string text = 1;
+    // Notification title.
+    string title = 2;
+}
+
+message Envelope {
+    // Message bytes (inside envelope).
+    bytes message = 1;
+    // Salt used when deriving key.
+    bytes salt = 2;
+    // Nonce used when encrypting message.
+    bytes nonce = 3;
+}

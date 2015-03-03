@@ -14,9 +14,6 @@ import android.util.Pair;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -39,6 +36,8 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import cc.bran.bnotify.proto.BNotifyProtos;
+
 public class GcmIntentService extends IntentService {
 
     private static final String LOG_TAG = "GcmIntentService";
@@ -47,7 +46,6 @@ public class GcmIntentService extends IntentService {
     private static final int AES_KEY_SIZE = 16;
     private static final int SALT_SIZE = 16;
     private static final int GCM_OVERHEAD_SIZE = 16;
-    private static final int GCM_NONCE_SIZE = 12;
     private static final int PBKDF2_ITERATION_COUNT = 4096;
     private static final String CACHED_KEY_FILENAME = "cache.key";
     private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
@@ -68,31 +66,29 @@ public class GcmIntentService extends IntentService {
             String messageType = gcm.getMessageType(intent);
 
             if (GoogleCloudMessaging.MESSAGE_TYPE_MESSAGE.equals(messageType) && !extras.isEmpty()) {
-                String base64Payload = extras.getString(PAYLOAD_KEY);
+                String payload = extras.getString(PAYLOAD_KEY);
 
-                // Base64-decode to encrypted payload bytes.
-                byte[] payload = Base64.decode(base64Payload, Base64.DEFAULT);
+                // Base64-decode & parse into an Envelope.
+                byte[] envelopeBytes = Base64.decode(payload, Base64.DEFAULT);
+                BNotifyProtos.Envelope envelope = BNotifyProtos.Envelope.parseFrom(envelopeBytes);
 
-                // Read salt and IV from encrypted payload, derive key, and create parameters.
-                byte[] salt = Arrays.copyOf(payload, SALT_SIZE);
-                GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(8*GCM_OVERHEAD_SIZE, payload, SALT_SIZE, GCM_NONCE_SIZE);
+                // Read parameters from envelope & create GCMParameterSpec.
+                byte[] salt = envelope.getSalt().toByteArray();
+                byte[] nonce = envelope.getNonce().toByteArray();
+                GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(8*GCM_OVERHEAD_SIZE, nonce);
 
                 // Derive the key (or use the cached key).
                 SecretKey key = getKey(salt);
 
-                // Decrypt the message.
+                // Decrypt the message & parse into a Notification.
                 Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
                 cipher.init(Cipher.DECRYPT_MODE, key, gcmParameterSpec);
-                byte[] plaintextPayload = cipher.doFinal(payload, SALT_SIZE + GCM_NONCE_SIZE, payload.length - SALT_SIZE - GCM_NONCE_SIZE);
+                byte[] notificationBytes = cipher.doFinal(envelope.getMessage().toByteArray());
+                BNotifyProtos.Notification notification = BNotifyProtos.Notification.parseFrom(notificationBytes);
 
-                // Parse the payload.
-                JSONObject message = new JSONObject(new String(plaintextPayload, "UTF-8"));
-                String title = message.getString("title");
-                String text = message.getString("text");
-
-                sendNotification(title, text);
+                sendNotification(notification.getTitle(), notification.getText());
             }
-        } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException | NoSuchPaddingException | InvalidKeyException | JSONException | BadPaddingException | InvalidAlgorithmParameterException | IllegalBlockSizeException | IllegalArgumentException | NoSuchProviderException exception) {
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException | NoSuchPaddingException | InvalidKeyException | BadPaddingException | InvalidAlgorithmParameterException | IllegalBlockSizeException | IllegalArgumentException | NoSuchProviderException exception) {
             Log.e(LOG_TAG, "Error showing notification", exception);
         } finally {
             GcmBroadcastReceiver.completeWakefulIntent(intent);
