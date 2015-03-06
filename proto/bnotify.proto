@@ -37,3 +37,12 @@ message Envelope {
     // Nonce used when encrypting message.
     bytes nonce = 3;
 }
+
+message BNotifySettings {
+    // Google API key.
+	string api_key = 1;
+	// GCM registration ID.
+	string registration_id = 2;
+	// Password.
+	string password = 3;
+}

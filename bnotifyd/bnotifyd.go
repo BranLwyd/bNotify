@@ -37,10 +37,8 @@ const (
 
 // Flags
 var (
-	port                  = flag.Int("port", 50051, "port to listen to RPCs on")
-	apiKeyFilename        = flag.String("api_key", "api.key", "filename of API key file to use")
-	encryptionKeyFilename = flag.String("encryption_key", "encryption.key", "filename of encryption key file to use")
-	registrationFilename  = flag.String("registration_id", "registration.id", "filename of the registration ID file to use")
+	port             = flag.Int("port", 50051, "port to listen to RPCs on")
+	settingsFilename = flag.String("settings", "bnotify.conf", "filename of settings file")
 )
 
 // Types
@@ -130,33 +128,19 @@ func postNotification(httpClient *http.Client, apiKey string, registrationId str
 	return nil
 }
 
-func readFileContent(keyFilename string) (string, error) {
-	content, err := ioutil.ReadFile(keyFilename)
-	if err != nil {
-		return "", err
-	}
-
-	return string(content), nil
-}
-
 func main() {
 	// Parse flags.
 	flag.Parse()
 
-	// Read API key, registration ID, and encryption password.
-	apiKey, err := readFileContent(*apiKeyFilename)
+	// Read settings.
+	settingsBytes, err := ioutil.ReadFile(*settingsFilename)
 	if err != nil {
-		log.Fatalf("Error reading API key: %s", err)
+		log.Fatalf("Error reading settings file: %s", err)
 	}
-
-	registrationId, err := readFileContent(*registrationFilename)
+	settings := &pb.BNotifySettings{}
+	err = proto.UnmarshalText(string(settingsBytes), settings)
 	if err != nil {
-		log.Fatalf("Error reading registration ID: %s", err)
-	}
-
-	encryptionPassword, err := readFileContent(*encryptionKeyFilename)
-	if err != nil {
-		log.Fatalf("Error reading encryption key: %s", err)
+		log.Fatalf("Error reading settings file: %s", err)
 	}
 
 	// Generate salt & derive key from password + salt.
@@ -165,7 +149,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error generating salt: %s", err)
 	}
-	key := pbkdf2.Key([]byte(encryptionPassword), salt, PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
+	key := pbkdf2.Key([]byte(settings.Password), salt, PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
 
 	// Initialize cipher based on key.
 	blockCipher, err := aes.NewCipher(key)
@@ -180,8 +164,8 @@ func main() {
 	// Create service, socket, and gRPC server objects.
 	service := &notificationService{
 		httpClient:     new(http.Client),
-		apiKey:         apiKey,
-		registrationId: registrationId,
+		apiKey:         settings.ApiKey,
+		registrationId: settings.RegistrationId,
 		salt:           string(salt),
 		gcmCipher:      gcmCipher,
 	}
