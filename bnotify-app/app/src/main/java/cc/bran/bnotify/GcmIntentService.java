@@ -13,6 +13,8 @@ import android.util.Log;
 import android.util.Pair;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
+import com.google.common.io.ByteStreams;
+import com.google.protobuf.ByteString;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -44,7 +46,6 @@ public class GcmIntentService extends IntentService {
     private static final String PROPERTY_PASSWORD = "password";
     private static final String PAYLOAD_KEY = "payload";
     private static final int AES_KEY_SIZE = 16;
-    private static final int SALT_SIZE = 16;
     private static final int GCM_OVERHEAD_SIZE = 16;
     private static final int PBKDF2_ITERATION_COUNT = 4096;
     private static final String CACHED_KEY_FILENAME = "cache.key";
@@ -140,17 +141,10 @@ public class GcmIntentService extends IntentService {
     private Pair<byte[], SecretKey> getCachedSaltAndKey() {
         File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
         try (FileInputStream cachedKeyStream = new FileInputStream(cachedKeyFile)) {
-            byte[] salt = new byte[SALT_SIZE];
-            if (cachedKeyStream.read(salt) != SALT_SIZE) {
-                return null;
-            }
-
-            byte[] keyMaterial = new byte[AES_KEY_SIZE];
-            if (cachedKeyStream.read(keyMaterial) != AES_KEY_SIZE) {
-                return null;
-            }
-
-            SecretKey key = new SecretKeySpec(keyMaterial, KEY_ALGORITHM);
+            byte[] saltAndKeyBytes = ByteStreams.toByteArray(cachedKeyStream);
+            BNotifyProtos.SaltAndKey saltAndKey = BNotifyProtos.SaltAndKey.parseFrom(saltAndKeyBytes);
+            byte[] salt = saltAndKey.getSalt().toByteArray();
+            SecretKey key = new SecretKeySpec(saltAndKey.getKey().toByteArray(), KEY_ALGORITHM);
             return new Pair<>(salt, key);
         } catch (IOException exception) {
             Log.w(LOG_TAG, "Error reading cached key", exception);
@@ -159,13 +153,14 @@ public class GcmIntentService extends IntentService {
     }
 
     private boolean storeCachedSaltAndKey(byte[] salt, SecretKey key) {
-        assert(salt.length == SALT_SIZE);
+        BNotifyProtos.SaltAndKey saltAndKey = BNotifyProtos.SaltAndKey.newBuilder()
+                .setSalt(ByteString.copyFrom(salt))
+                .setKey(ByteString.copyFrom(key.getEncoded()))
+                .build();
 
         File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
         try (FileOutputStream cachedKeyStream = new FileOutputStream(cachedKeyFile)) {
-            cachedKeyStream.write(salt);
-            byte[] keyMaterial = key.getEncoded();
-            cachedKeyStream.write(keyMaterial);
+            cachedKeyStream.write(saltAndKey.toByteArray());
             return true;
         } catch (IOException exception) {
             Log.w(LOG_TAG, "Error storing cached key", exception);

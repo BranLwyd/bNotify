@@ -46,3 +46,10 @@ message BNotifySettings {
 	// Password.
 	string password = 3;
 }
+
+message SaltAndKey {
+	// Salt.
+	bytes salt = 1;
+	// Derived key associated with salt.
+	bytes key = 2;
+}
