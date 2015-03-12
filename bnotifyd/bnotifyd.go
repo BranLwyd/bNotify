@@ -20,10 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 )
 
 // Constants
@@ -169,25 +166,13 @@ func main() {
 		salt:           string(salt),
 		gcmCipher:      gcmCipher,
 	}
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
 		log.Fatalf("Error listening on port %d: %s", *port, err)
 	}
 	defer listener.Close()
 	server := grpc.NewServer()
 	pb.RegisterNotificationServiceServer(server, service)
-
-	// Attempt to catch signals to shut down the listener.
-	// (this is evidently necessary to remove the socket file)
-	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		for sig := range signalChannel {
-			log.Printf("Received signal '%s', exiting...", sig)
-			listener.Close()
-			os.Exit(1)
-		}
-	}()
 
 	// Begin serving.
 	log.Printf("Listening for requests on port %d...", *port)
