@@ -10,33 +10,35 @@
 
     <TextView
         android:id="@+id/sender_id_label"
+        android:labelFor="@+id/sender_id"
         android:text="@string/sender_id"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 
     <EditText
-        android:id="@+id/sender_id"
+        android:id="@id/sender_id"
         android:inputType="number"
         android:layout_width="fill_parent"
         android:layout_height="wrap_content"
-        android:layout_toRightOf="@id/sender_id_label"
-        android:layout_marginLeft="5dp"
+        android:layout_toEndOf="@id/sender_id_label"
+        android:layout_marginStart="5dp"
         android:layout_alignBaseline="@id/sender_id_label" />
 
     <TextView
         android:id="@+id/password_label"
+        android:labelFor="@+id/password"
         android:text="@string/password"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_below="@id/sender_id" />
 
     <EditText
-        android:id="@+id/password"
+        android:id="@id/password"
         android:layout_width="fill_parent"
         android:layout_height="wrap_content"
         android:inputType="textPassword"
-        android:layout_toRightOf="@id/password_label"
-        android:layout_marginLeft="5dp"
+        android:layout_toEndOf="@id/password_label"
+        android:layout_marginStart="5dp"
         android:layout_alignBaseline="@id/password_label" />
 
     <TextView
