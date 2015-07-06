@@ -133,7 +133,7 @@ public class GcmIntentService extends IntentService {
     storeCachedSaltAndKey(salt, key);
 
     // Per http://stackoverflow.com/questions/11503157/decrypting-error-no-iv-set-when-one-expected:
-    //  The above code creats a JCEPBEKey, not an PBKDF2WithHmacSHA1 key. Recreating with the
+    //  The above code creates a JCEPBEKey, not an PBKDF2WithHmacSHA1 key. Recreating with the
     //  appropriate algorithm & the key material fixes this.
     return new SecretKeySpec(key.getEncoded(), KEY_ALGORITHM);
   }
@@ -170,11 +170,15 @@ public class GcmIntentService extends IntentService {
 
   private int getNextNotificationId() {
     SharedPreferences prefs = getGCMPreferences();
-    int nextId = prefs.getInt(PROPERTY_NEXT_NOTIFICATION_ID, 0);
 
-    SharedPreferences.Editor editor = prefs.edit();
-    editor.putInt(PROPERTY_NEXT_NOTIFICATION_ID, nextId + 1);
-    editor.apply();
+    // Loop until commit succeeds.
+    int nextId;
+    SharedPreferences.Editor editor;
+    do {
+      nextId = prefs.getInt(PROPERTY_NEXT_NOTIFICATION_ID, 0);
+      editor = prefs.edit();
+      editor.putInt(PROPERTY_NEXT_NOTIFICATION_ID, nextId + 1);
+    } while(!editor.commit());
 
     return nextId;
   }
