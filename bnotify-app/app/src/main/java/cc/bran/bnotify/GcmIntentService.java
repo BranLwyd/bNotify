@@ -26,7 +26,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -44,6 +43,7 @@ public class GcmIntentService extends IntentService {
 
   private static final String LOG_TAG = "GcmIntentService";
   private static final String PROPERTY_PASSWORD = "password";
+  private static final String PROPERTY_NEXT_NOTIFICATION_ID = "next_notification_id";
   private static final String PAYLOAD_KEY = "payload";
   private static final int AES_KEY_SIZE = 16;
   private static final int GCM_OVERHEAD_SIZE = 16;
@@ -51,12 +51,8 @@ public class GcmIntentService extends IntentService {
   private static final String CACHED_KEY_FILENAME = "cache.key";
   private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
 
-  private final AtomicInteger nextId;
-
   public GcmIntentService() {
     super("GcmIntentService");
-
-    this.nextId = new AtomicInteger(0);
   }
 
   @Override
@@ -106,7 +102,7 @@ public class GcmIntentService extends IntentService {
     PendingIntent contentIntent =
         PendingIntent.getActivity(this, 0, new Intent(this, SettingsActivity.class), 0);
 
-    int notificationId = nextId.getAndIncrement();
+    int notificationId = getNextNotificationId();
     Notification notification = new Notification.Builder(this)
         .setSmallIcon(R.drawable.logo_white)
         .setContentTitle(title)
@@ -136,13 +132,10 @@ public class GcmIntentService extends IntentService {
     SecretKey key = secretKeyFactory.generateSecret(keySpec);
     storeCachedSaltAndKey(salt, key);
 
-    // Encode and de-encode key -- otherwise we get an error:
-    //   java.security.InvalidAlgorithmParameterException: no IV set when one expected
-    // TODO(bran): why is this necessary? (working around bug in BC? unlikely...)
-    byte[] keyMaterial = key.getEncoded();
-    key = new SecretKeySpec(keyMaterial, KEY_ALGORITHM);
-
-    return key;
+    // Per http://stackoverflow.com/questions/11503157/decrypting-error-no-iv-set-when-one-expected:
+    //  The above code creats a JCEPBEKey, not an PBKDF2WithHmacSHA1 key. Recreating with the
+    //  appropriate algorithm & the key material fixes this.
+    return new SecretKeySpec(key.getEncoded(), KEY_ALGORITHM);
   }
 
   private Pair<byte[], SecretKey> getCachedSaltAndKey() {
@@ -173,6 +166,17 @@ public class GcmIntentService extends IntentService {
       Log.w(LOG_TAG, "Error storing cached key", exception);
       return false;
     }
+  }
+
+  private int getNextNotificationId() {
+    SharedPreferences prefs = getGCMPreferences();
+    int nextId = prefs.getInt(PROPERTY_NEXT_NOTIFICATION_ID, 0);
+
+    SharedPreferences.Editor editor = prefs.edit();
+    editor.putInt(PROPERTY_NEXT_NOTIFICATION_ID, nextId + 1);
+    editor.apply();
+
+    return nextId;
   }
 
   private String getPassword() {

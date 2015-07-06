@@ -20,6 +20,7 @@ import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.Objects;
 
@@ -29,6 +30,7 @@ public class SettingsActivity extends Activity {
   private static final String PROPERTY_SENDER_ID = "sender_id";
   private static final String PROPERTY_APP_VERSION = "app_version";
   private static final String PROPERTY_PASSWORD = "password";
+  private static final String CACHED_KEY_FILENAME = "cache.key";
   private static final int PLAY_SERVICES_RESOLUTION_REQUEST = 9000;
 
   private GoogleCloudMessaging gcm;
@@ -179,6 +181,10 @@ public class SettingsActivity extends Activity {
     SharedPreferences.Editor editor = prefs.edit();
     editor.putString(PROPERTY_PASSWORD, password);
     editor.apply();
+
+    // Clear cached key.
+    File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
+    cachedKeyFile.delete();
   }
 
   private SharedPreferences getGCMPreferences() {
