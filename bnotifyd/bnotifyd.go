@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Constants
@@ -49,6 +50,8 @@ type notificationService struct {
 
 // Code
 func (ns *notificationService) SendNotification(ctx context.Context, req *pb.SendNotificationRequest) (*pb.SendNotificationResponse, error) {
+	log.Printf("Got notification request")
+
 	// Marshal request notification & encrypt.
 	plaintextMessage, err := proto.Marshal(req.Notification)
 	if err != nil {
@@ -77,12 +80,23 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 	payload := base64.StdEncoding.EncodeToString(envelopeData)
 
 	// Post the notification.
-	err = postNotification(ns.httpClient, ns.apiKey, ns.registrationId, payload)
-	if err != nil {
-		log.Printf("Error while posting notification: %s", err)
-		return nil, err
-	}
+	go retryPostNotification(ns.httpClient, ns.apiKey, ns.registrationId, payload)
 	return &pb.SendNotificationResponse{}, nil
+}
+
+func retryPostNotification(httpClient *http.Client, apiKey string, registrationId string, payload string) {
+	delay := time.Second
+	for {
+		err := postNotification(httpClient, apiKey, registrationId, payload)
+		if err == nil {
+			log.Printf("Notification posted")
+			return
+		}
+
+		log.Printf("Error posting notification, retrying in %.2fs: %s", float64(delay)/float64(time.Second), err)
+		time.Sleep(delay)
+		delay = time.Duration(float64(delay) * 1.5)
+	}
 }
 
 func postNotification(httpClient *http.Client, apiKey string, registrationId string, payload string) error {
