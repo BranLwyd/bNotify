@@ -44,7 +44,6 @@ type notificationService struct {
 	httpClient     *http.Client
 	apiKey         string
 	registrationId string
-	salt           string
 	gcmCipher      cipher.AEAD
 }
 
@@ -69,7 +68,6 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 	// Fill out final envelope proto & base-64 encode into a payload.
 	envelopeProto := &pb.Envelope{
 		Message: message,
-		Salt:    []byte(ns.salt),
 		Nonce:   nonce,
 	}
 	envelopeData, err := proto.Marshal(envelopeProto)
@@ -154,13 +152,8 @@ func main() {
 		log.Fatalf("Error reading settings file: %s", err)
 	}
 
-	// Generate salt & derive key from password + salt.
-	salt := make([]byte, SALT_SIZE)
-	_, err = rand.Read(salt)
-	if err != nil {
-		log.Fatalf("Error generating salt: %s", err)
-	}
-	key := pbkdf2.Key([]byte(settings.Password), salt, PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
+	// Derive key from password & salt (registration ID).
+	key := pbkdf2.Key([]byte(settings.Password), []byte(settings.RegistrationId), PBKDF2_ITER_COUNT, AES_KEY_SIZE, sha1.New)
 
 	// Initialize cipher based on key.
 	blockCipher, err := aes.NewCipher(key)
@@ -177,7 +170,6 @@ func main() {
 		httpClient:     new(http.Client),
 		apiKey:         settings.ApiKey,
 		registrationId: settings.RegistrationId,
-		salt:           string(salt),
 		gcmCipher:      gcmCipher,
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))

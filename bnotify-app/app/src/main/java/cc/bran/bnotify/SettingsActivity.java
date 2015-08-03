@@ -22,13 +22,11 @@ import com.google.android.gms.gcm.GoogleCloudMessaging;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Objects;
 
 public class SettingsActivity extends Activity {
 
   private static final String PROPERTY_REGISTRATION_ID = "registration_id";
   private static final String PROPERTY_SENDER_ID = "sender_id";
-  private static final String PROPERTY_APP_VERSION = "app_version";
   private static final String PROPERTY_PASSWORD = "password";
   private static final String CACHED_KEY_FILENAME = "cache.key";
   private static final int PLAY_SERVICES_RESOLUTION_REQUEST = 9000;
@@ -86,7 +84,7 @@ public class SettingsActivity extends Activity {
     senderIdEditText.setText(senderId == null ? "" : senderId);
     passwordEditText.setText(getPassword());
 
-    String registrationId = getRegistrationId(getApplicationContext());
+    String registrationId = getRegistrationId();
     registrationIdTextView.setText(registrationId == null ? "" : registrationId);
   }
 
@@ -121,7 +119,7 @@ public class SettingsActivity extends Activity {
       protected String doInBackground(Void... params) {
         try {
           String registrationId = gcm.register(senderId);
-          storeRegistrationId(getApplicationContext(), senderId, registrationId);
+          storeRegistrationId(registrationId);
           return registrationId;
         } catch (IOException exception) {
           return String.format("Error: %s", exception.getMessage());
@@ -137,37 +135,23 @@ public class SettingsActivity extends Activity {
     task.execute();
   }
 
-  private String getRegistrationId(Context context) {
+  private String getRegistrationId() {
     SharedPreferences prefs = getGCMPreferences();
-    String registrationId = prefs.getString(PROPERTY_REGISTRATION_ID, null);
-    if (registrationId == null) {
-      return null;
-    }
-
-    // Check if app was updated or sender ID changed.
-    int registeredVersion = prefs.getInt(PROPERTY_APP_VERSION, Integer.MIN_VALUE);
-    int currentVersion = getAppVersion(context);
-    if (registeredVersion != currentVersion) {
-      return null;
-    }
-
-    String registeredSenderId = prefs.getString(PROPERTY_SENDER_ID, null);
-    String currentSenderId = senderIdEditText.getText().toString();
-    if (!Objects.equals(registeredSenderId, currentSenderId)) {
-      return null;
-    }
-
-    return registrationId;
+    return prefs.getString(PROPERTY_REGISTRATION_ID, null);
   }
 
-  private void storeRegistrationId(Context context, String senderId, String registrationId) {
+  private void storeRegistrationId(String registrationId) {
     SharedPreferences prefs = getGCMPreferences();
-    int appVersion = getAppVersion(context);
+
+    if (prefs.getString(PROPERTY_REGISTRATION_ID, "").equals(registrationId)) {
+      return;
+    }
+
     SharedPreferences.Editor editor = prefs.edit();
     editor.putString(PROPERTY_REGISTRATION_ID, registrationId);
-    editor.putString(PROPERTY_SENDER_ID, senderId);
-    editor.putInt(PROPERTY_APP_VERSION, appVersion);
     editor.apply();
+
+    clearCachedKey();
   }
 
   private String getPassword() {
@@ -182,9 +166,7 @@ public class SettingsActivity extends Activity {
     editor.putString(PROPERTY_PASSWORD, password);
     editor.apply();
 
-    // Clear cached key.
-    File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
-    cachedKeyFile.delete();
+    clearCachedKey();
   }
 
   private SharedPreferences getGCMPreferences() {
@@ -205,13 +187,8 @@ public class SettingsActivity extends Activity {
     return true;
   }
 
-  private static int getAppVersion(Context context) {
-    try {
-      PackageInfo packageInfo =
-          context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-      return packageInfo.versionCode;
-    } catch (PackageManager.NameNotFoundException exception) {
-      throw new RuntimeException("Could not get package name", exception);
-    }
+  private void clearCachedKey() {
+    File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
+    cachedKeyFile.delete();
   }
 }

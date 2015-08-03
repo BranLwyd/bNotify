@@ -20,12 +20,14 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
+import java.util.Objects;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -42,6 +44,7 @@ import cc.bran.bnotify.proto.BNotifyProtos;
 public class GcmIntentService extends IntentService {
 
   private static final String LOG_TAG = "GcmIntentService";
+  private static final String PROPERTY_REGISTRATION_ID = "registration_id";
   private static final String PROPERTY_PASSWORD = "password";
   private static final String PROPERTY_NEXT_NOTIFICATION_ID = "next_notification_id";
   private static final String PAYLOAD_KEY = "payload";
@@ -70,14 +73,11 @@ public class GcmIntentService extends IntentService {
         BNotifyProtos.Envelope envelope = BNotifyProtos.Envelope.parseFrom(envelopeBytes);
 
         // Read parameters from envelope & create GCMParameterSpec.
-        byte[] salt = envelope.getSalt().toByteArray();
         byte[] nonce = envelope.getNonce().toByteArray();
         GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(8 * GCM_OVERHEAD_SIZE, nonce);
 
-        // Derive the key (or use the cached key).
-        SecretKey key = getKey(salt);
-
         // Decrypt the message & parse into a Notification.
+        SecretKey key = getKey();
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
         cipher.init(Cipher.DECRYPT_MODE, key, gcmParameterSpec);
         byte[] notificationBytes = cipher.doFinal(envelope.getMessage().toByteArray());
@@ -116,21 +116,23 @@ public class GcmIntentService extends IntentService {
     notificationManager.notify(notificationId, notification);
   }
 
-  private SecretKey getKey(byte[] salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
+  private SecretKey getKey() throws NoSuchAlgorithmException, InvalidKeySpecException {
     // Try to use cached key first.
-    Pair<byte[], SecretKey> cachedSaltAndKey = getCachedSaltAndKey();
-    if (cachedSaltAndKey != null && Arrays.equals(salt, cachedSaltAndKey.first)) {
-      return cachedSaltAndKey.second;
+    SecretKey key = getCachedKey();
+    if (key != null) {
+      return key;
     }
 
     // Derive key, store it in the cache, and return it.
-    Log.i(LOG_TAG, "Cached key missing or salt mismatch, deriving key");
+    Log.i(LOG_TAG, "Could not read cached key, deriving...");
     String password = getPassword();
+    String registrationId = getRegistrationId();
+    byte[] salt = registrationId.getBytes(Charset.forName("UTF-8"));
     PBEKeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt,
         PBKDF2_ITERATION_COUNT, 8 * AES_KEY_SIZE);
     SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(KEY_ALGORITHM);
-    SecretKey key = secretKeyFactory.generateSecret(keySpec);
-    storeCachedSaltAndKey(salt, key);
+    key = secretKeyFactory.generateSecret(keySpec);
+    storeCachedKey(key);
 
     // Per http://stackoverflow.com/questions/11503157/decrypting-error-no-iv-set-when-one-expected:
     //  The above code creates a JCEPBEKey, not an PBKDF2WithHmacSHA1 key. Recreating with the
@@ -138,34 +140,31 @@ public class GcmIntentService extends IntentService {
     return new SecretKeySpec(key.getEncoded(), KEY_ALGORITHM);
   }
 
-  private Pair<byte[], SecretKey> getCachedSaltAndKey() {
+  private SecretKey getCachedKey() {
     File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
     try (FileInputStream cachedKeyStream = new FileInputStream(cachedKeyFile)) {
-      byte[] saltAndKeyBytes = ByteStreams.toByteArray(cachedKeyStream);
-      BNotifyProtos.SaltAndKey saltAndKey = BNotifyProtos.SaltAndKey.parseFrom(saltAndKeyBytes);
-      byte[] salt = saltAndKey.getSalt().toByteArray();
-      SecretKey key = new SecretKeySpec(saltAndKey.getKey().toByteArray(), KEY_ALGORITHM);
-      return new Pair<>(salt, key);
+      byte[] keyBytes = ByteStreams.toByteArray(cachedKeyStream);
+      return new SecretKeySpec(keyBytes, KEY_ALGORITHM);
     } catch (IOException exception) {
       Log.w(LOG_TAG, "Error reading cached key", exception);
       return null;
     }
   }
 
-  private boolean storeCachedSaltAndKey(byte[] salt, SecretKey key) {
-    BNotifyProtos.SaltAndKey saltAndKey = BNotifyProtos.SaltAndKey.newBuilder()
-        .setSalt(ByteString.copyFrom(salt))
-        .setKey(ByteString.copyFrom(key.getEncoded()))
-        .build();
-
+  private boolean storeCachedKey(SecretKey key) {
     File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
     try (FileOutputStream cachedKeyStream = new FileOutputStream(cachedKeyFile)) {
-      cachedKeyStream.write(saltAndKey.toByteArray());
+      cachedKeyStream.write(key.getEncoded());
       return true;
     } catch (IOException exception) {
       Log.w(LOG_TAG, "Error storing cached key", exception);
       return false;
     }
+  }
+
+  private String getRegistrationId() {
+    SharedPreferences prefs = getGCMPreferences();
+    return prefs.getString(PROPERTY_REGISTRATION_ID, null);
   }
 
   private int getNextNotificationId() {
