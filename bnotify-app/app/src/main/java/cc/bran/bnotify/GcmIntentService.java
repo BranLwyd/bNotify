@@ -14,10 +14,12 @@ import android.util.Pair;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 import com.google.common.io.ByteStreams;
+import com.google.common.primitives.UnsignedLongs;
 import com.google.protobuf.ByteString;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -27,6 +29,8 @@ import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 import javax.crypto.BadPaddingException;
@@ -50,8 +54,9 @@ public class GcmIntentService extends IntentService {
   private static final String PAYLOAD_KEY = "payload";
   private static final int AES_KEY_SIZE = 16;
   private static final int GCM_OVERHEAD_SIZE = 16;
-  private static final int PBKDF2_ITERATION_COUNT = 4096;
+  private static final int PBKDF2_ITERATION_COUNT = 400000;
   private static final String CACHED_KEY_FILENAME = "cache.key";
+  private static final String STATE_FILENAME = "state";
   private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
 
   public GcmIntentService() {
@@ -80,11 +85,13 @@ public class GcmIntentService extends IntentService {
         SecretKey key = getKey();
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
         cipher.init(Cipher.DECRYPT_MODE, key, gcmParameterSpec);
-        byte[] notificationBytes = cipher.doFinal(envelope.getMessage().toByteArray());
-        BNotifyProtos.Notification notification =
-            BNotifyProtos.Notification.parseFrom(notificationBytes);
+        byte[] messageBytes = cipher.doFinal(envelope.getMessage().toByteArray());
+        BNotifyProtos.Message message = BNotifyProtos.Message.parseFrom(messageBytes);
 
-        sendNotification(notification.getTitle(), notification.getText());
+        if (checkSeq(message)) {
+          showNotification(message.getNotification().getTitle(),
+              message.getNotification().getText());
+        }
       }
     } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException
         | NoSuchPaddingException | InvalidKeyException | BadPaddingException
@@ -96,7 +103,35 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private void sendNotification(String title, String text) {
+  private boolean checkSeq(BNotifyProtos.Message message) {
+    // TODO(bran): since messages can arrive out-of-order, keep track of all seen seqs instead of just the max
+    Map<String, Long> maxSeqByServer = getMaxSeqByServer();
+    if (maxSeqByServer == null) {
+      return false;
+    }
+
+    Long maxSeq = maxSeqByServer.get(message.getServerId());
+    boolean allowMessage;
+    if (maxSeq == null) {
+      allowMessage = true;
+      maxSeqByServer.put(message.getServerId(), message.getSeq());
+    } else {
+      allowMessage = (UnsignedLongs.compare(maxSeq, message.getSeq()) < 0);
+      if (allowMessage) {
+        maxSeqByServer.put(message.getServerId(), message.getSeq());
+      }
+    }
+
+    if (allowMessage) {
+      if (!setMaxSeqByServer(maxSeqByServer)) {
+        return false;
+      }
+    }
+
+    return allowMessage;
+  }
+
+  private void showNotification(String title, String text) {
     NotificationManager notificationManager =
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
     PendingIntent contentIntent =
@@ -132,7 +167,7 @@ public class GcmIntentService extends IntentService {
         PBKDF2_ITERATION_COUNT, 8 * AES_KEY_SIZE);
     SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(KEY_ALGORITHM);
     key = secretKeyFactory.generateSecret(keySpec);
-    storeCachedKey(key);
+    setCachedKey(key);
 
     // Per http://stackoverflow.com/questions/11503157/decrypting-error-no-iv-set-when-one-expected:
     //  The above code creates a JCEPBEKey, not an PBKDF2WithHmacSHA1 key. Recreating with the
@@ -151,13 +186,46 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private boolean storeCachedKey(SecretKey key) {
+  private boolean setCachedKey(SecretKey key) {
     File cachedKeyFile = new File(getCacheDir(), CACHED_KEY_FILENAME);
     try (FileOutputStream cachedKeyStream = new FileOutputStream(cachedKeyFile)) {
       cachedKeyStream.write(key.getEncoded());
       return true;
     } catch (IOException exception) {
       Log.w(LOG_TAG, "Error storing cached key", exception);
+      return false;
+    }
+  }
+
+  private Map<String, Long> getMaxSeqByServer() {
+    File stateFile = new File(getCacheDir(), STATE_FILENAME);
+    try (FileInputStream stateStream = new FileInputStream(stateFile)) {
+      byte[] stateBytes = ByteStreams.toByteArray(stateStream);
+      BNotifyProtos.BNotifyClientState state =
+          BNotifyProtos.BNotifyClientState.parseFrom(stateBytes);
+      return new HashMap<>(state.getMaxSeqByServer());
+    } catch (FileNotFoundException exception) {
+      Log.w(LOG_TAG, "state file does not exist; returning empty map", exception);
+      return new HashMap<>();
+    } catch (IOException exception) {
+      Log.w(LOG_TAG, "error reading state file", exception);
+      showNotification("bNotify error", String.format("Error reading state file: %s", exception));
+      return null;
+    }
+  }
+
+  private boolean setMaxSeqByServer(Map<String, Long> maxSeqByServer) {
+    BNotifyProtos.BNotifyClientState state = BNotifyProtos.BNotifyClientState.newBuilder()
+            .putAllMaxSeqByServer(maxSeqByServer)
+            .build();
+
+    File stateFile = new File(getCacheDir(), STATE_FILENAME);
+    try (FileOutputStream stateStream = new FileOutputStream(stateFile)) {
+      stateStream.write(state.toByteArray());
+      return true;
+    } catch (IOException exception) {
+      Log.w(LOG_TAG, "error writing state file", exception);
+      showNotification("bNotify error", String.format("Error writing state file: %s", exception));
       return false;
     }
   }

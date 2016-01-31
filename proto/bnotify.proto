@@ -8,39 +8,60 @@ option java_outer_classname = "BNotifyProtos";
 
 // Service definitions.
 service NotificationService {
-    rpc SendNotification (SendNotificationRequest) returns (SendNotificationResponse) {}
+  rpc SendNotification (SendNotificationRequest) returns (SendNotificationResponse) {}
 }
 
 // Service request/response messages.
 message SendNotificationRequest {
-    // The notification to send.
-    Notification notification = 1;
+  // The notification to send.
+  Notification notification = 1;
 }
 
 message SendNotificationResponse {
-	// Purposefully empty.
+  // Purposefully empty.
 }
 
 // Other messages.
 message Notification {
-    // Notification text.
-    string text = 1;
-    // Notification title.
-    string title = 2;
+  // Notification text.
+  string text = 1;
+  // Notification title.
+  string title = 2;
+}
+
+message Message {
+  // Server ID.
+  string server_id = 1;
+  // Message sequence number.
+  uint64 seq = 2;
+  // Notification.
+  Notification notification = 3;
 }
 
 message Envelope {
-    // Message bytes (inside envelope).
-    bytes message = 1;
-    // Nonce used when encrypting message.
-    bytes nonce = 2;
+  // Encrypted message bytes.
+  bytes message = 1;
+  // Nonce used when encrypting message.
+  bytes nonce = 2;
 }
 
 message BNotifySettings {
-    // Google API key.
-	string api_key = 1;
-	// GCM registration ID.
-	string registration_id = 2;
-	// Password.
-	string password = 3;
+  // Google API key.
+  string api_key = 1;
+  // GCM registration ID.
+  string registration_id = 2;
+  // Password.
+  string password = 3;
+}
+
+message BNotifyServerState {
+  // Server ID.
+  string server_id = 1;
+  // Next message sequence number.
+  uint64 next_seq = 2;
+}
+
+message BNotifyClientState {
+  // Maximum sequence seen by server ID.
+  map<string, uint64> max_seq_by_server = 1;
 }
