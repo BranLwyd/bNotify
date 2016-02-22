@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"sync"
 
@@ -150,8 +151,8 @@ func (ns *notificationService) postNotification(payload string) error {
 }
 
 func getServerIDAndSeq(increment bool) (serverID string, seq uint64, _ error) {
-	// TODO(bran): consider using a library (e.g. SQLite) to handle intricacies of handling files on disk
-	//             (this is probably subtly buggy under certain failure modes, & nonce reuse is disastrous...)
+	// TODO(bran): consider using a library (e.g. SQLite) to handle files on disk
+	//             (sadly, I can't find a non-cgo SQLite package. oh well.)
 	stateMu.Lock()
 	defer stateMu.Unlock()
 
@@ -202,7 +203,7 @@ func getServerIDAndSeq(increment bool) (serverID string, seq uint64, _ error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("could not serialize state: %v", err)
 	}
-	outFile, err := ioutil.TempFile("", "bnotifyd_")
+	outFile, err := ioutil.TempFile(path.Dir(*stateFilename), "bnotifyd_")
 	if err != nil {
 		return "", 0, fmt.Errorf("could not open temporary file: %v", err)
 	}
