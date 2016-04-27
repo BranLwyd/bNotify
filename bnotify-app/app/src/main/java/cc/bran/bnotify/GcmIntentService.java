@@ -105,7 +105,7 @@ public class GcmIntentService extends IntentService {
 
   private boolean checkSeq(BNotifyProtos.Message message) {
     // TODO(bran): since messages can arrive out-of-order, keep track of all seen seqs instead of just the max
-    Map<String, Long> maxSeqByServer = getMaxSeqByServer();
+    Map<ByteString, Long> maxSeqByServer = getMaxSeqByServer();
     if (maxSeqByServer == null) {
       return false;
     }
@@ -197,13 +197,18 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private Map<String, Long> getMaxSeqByServer() {
+  private Map<ByteString, Long> getMaxSeqByServer() {
     File stateFile = new File(getCacheDir(), STATE_FILENAME);
     try (FileInputStream stateStream = new FileInputStream(stateFile)) {
       byte[] stateBytes = ByteStreams.toByteArray(stateStream);
       BNotifyProtos.BNotifyClientState state =
           BNotifyProtos.BNotifyClientState.parseFrom(stateBytes);
-      return new HashMap<>(state.getMaxSeqByServer());
+
+      Map<ByteString, Long> maxSeqByServer = new HashMap<>();
+      for (BNotifyProtos.BNotifyClientState.ServerInfo serverInfo : state.getServerInfoList()) {
+        maxSeqByServer.put(serverInfo.getServerId(), serverInfo.getMaxSeq());
+      }
+      return maxSeqByServer;
     } catch (FileNotFoundException exception) {
       Log.w(LOG_TAG, "state file does not exist; returning empty map", exception);
       return new HashMap<>();
@@ -214,14 +219,18 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private boolean setMaxSeqByServer(Map<String, Long> maxSeqByServer) {
-    BNotifyProtos.BNotifyClientState state = BNotifyProtos.BNotifyClientState.newBuilder()
-            .putAllMaxSeqByServer(maxSeqByServer)
-            .build();
+  private boolean setMaxSeqByServer(Map<ByteString, Long> maxSeqByServer) {
+    BNotifyProtos.BNotifyClientState.Builder stateBuilder =
+        BNotifyProtos.BNotifyClientState.newBuilder();
+    for (Map.Entry<ByteString, Long> entry : maxSeqByServer.entrySet()) {
+      stateBuilder.addServerInfo(BNotifyProtos.BNotifyClientState.ServerInfo.newBuilder()
+          .setServerId(entry.getKey())
+          .setMaxSeq(entry.getValue()));
+    }
 
     File stateFile = new File(getCacheDir(), STATE_FILENAME);
     try (FileOutputStream stateStream = new FileOutputStream(stateFile)) {
-      stateStream.write(state.toByteArray());
+      stateStream.write(stateBuilder.build().toByteArray());
       return true;
     } catch (IOException exception) {
       Log.w(LOG_TAG, "error writing state file", exception);

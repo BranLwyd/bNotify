@@ -31,7 +31,7 @@ message Notification {
 
 message Message {
   // Server ID.
-  string server_id = 1;
+  bytes server_id = 1;
   // Message sequence number.
   uint64 seq = 2;
   // Notification.
@@ -54,14 +54,13 @@ message BNotifySettings {
   string password = 3;
 }
 
-message BNotifyServerState {
-  // Server ID.
-  string server_id = 1;
-  // Next message sequence number.
-  uint64 next_seq = 2;
-}
-
 message BNotifyClientState {
-  // Maximum sequence seen by server ID.
-  map<string, uint64> max_seq_by_server = 1;
+  // Per-server information.
+  message ServerInfo {
+    // Server ID.
+    bytes server_id = 1;
+    // Maximum sequence seen from server.
+    uint64 max_seq = 2;
+  }
+  repeated ServerInfo server_info = 1;
 }
