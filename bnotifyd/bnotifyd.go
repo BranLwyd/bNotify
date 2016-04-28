@@ -96,9 +96,7 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 		// Compute nonce = serverID || seq & encrypt.
 		key := make([]byte, binary.Size(seq))
 		binary.BigEndian.PutUint64(key, seq)
-		nonce := make([]byte, len(serverID)+len(key))
-		copy(nonce, serverID)
-		copy(nonce[len(serverID):], key)
+		nonce := append(serverID, key...)
 		message := ns.gcmCipher.Seal(nil, nonce, plaintextMessage, nil)
 
 		// Fill out final envelope proto & write to state.
@@ -147,8 +145,9 @@ func (ns *notificationService) startSendingNotifications() {
 				if messagesBucket == nil {
 					return errors.New("missing pending_messages bucket")
 				}
-				c := messagesBucket.Cursor()
-				key, payload = c.First()
+				k, p := messagesBucket.Cursor().First()
+				key = append(key, k...)
+				payload = append(payload, p...)
 				return nil
 			}); err != nil {
 				// This is unrecoverable and permanent, so exit.
