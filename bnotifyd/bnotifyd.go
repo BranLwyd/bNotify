@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"code.google.com/p/go.crypto/pbkdf2"
 	"github.com/boltdb/bolt"
 	"github.com/golang/protobuf/proto"
+	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
