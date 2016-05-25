@@ -54,13 +54,20 @@ message BNotifySettings {
   string password = 3;
 }
 
+message SequenceRange {
+  // Minimum (inclusive).
+  uint64 min = 1;
+  // Maximum (inclusive).
+  uint64 max = 2;
+}
+
 message BNotifyClientState {
   // Per-server information.
   message ServerInfo {
     // Server ID.
     bytes server_id = 1;
     // Maximum sequence seen from server.
-    uint64 max_seq = 2;
+    repeated SequenceRange used_seqs = 2;
   }
   repeated ServerInfo server_info = 1;
 }

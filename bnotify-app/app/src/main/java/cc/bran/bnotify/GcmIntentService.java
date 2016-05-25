@@ -10,11 +10,9 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
-import android.util.Pair;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 import com.google.common.io.ByteStreams;
-import com.google.common.primitives.UnsignedLongs;
 import com.google.protobuf.ByteString;
 
 import java.io.File;
@@ -28,10 +26,8 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -104,26 +100,24 @@ public class GcmIntentService extends IntentService {
   }
 
   private boolean checkSeq(BNotifyProtos.Message message) {
-    // TODO(bran): since messages can arrive out-of-order, keep track of all seen seqs instead of just the max
-    Map<ByteString, Long> maxSeqByServer = getMaxSeqByServer();
-    if (maxSeqByServer == null) {
+    Map<ByteString, UsedSequences> usedSeqsByServer = getUsedSeqsByServer();
+    if (usedSeqsByServer == null) {
       return false;
     }
 
-    Long maxSeq = maxSeqByServer.get(message.getServerId());
+    UsedSequences usedSeqs = usedSeqsByServer.get(message.getServerId());
     boolean allowMessage;
-    if (maxSeq == null) {
+    if (usedSeqs == null) {
       allowMessage = true;
-      maxSeqByServer.put(message.getServerId(), message.getSeq());
+      usedSeqs = UsedSequences.createEmpty();
+      usedSeqs.use(message.getSeq());
+      usedSeqsByServer.put(message.getServerId(), usedSeqs);
     } else {
-      allowMessage = (UnsignedLongs.compare(maxSeq, message.getSeq()) < 0);
-      if (allowMessage) {
-        maxSeqByServer.put(message.getServerId(), message.getSeq());
-      }
+      allowMessage = usedSeqs.use(message.getSeq());
     }
 
     if (allowMessage) {
-      if (!setMaxSeqByServer(maxSeqByServer)) {
+      if (!setUsedSeqsByServer(usedSeqsByServer)) {
         return false;
       }
     }
@@ -197,18 +191,19 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private Map<ByteString, Long> getMaxSeqByServer() {
+  private Map<ByteString, UsedSequences> getUsedSeqsByServer() {
     File stateFile = new File(getCacheDir(), STATE_FILENAME);
     try (FileInputStream stateStream = new FileInputStream(stateFile)) {
       byte[] stateBytes = ByteStreams.toByteArray(stateStream);
       BNotifyProtos.BNotifyClientState state =
           BNotifyProtos.BNotifyClientState.parseFrom(stateBytes);
 
-      Map<ByteString, Long> maxSeqByServer = new HashMap<>();
+      Map<ByteString, UsedSequences> usedSeqsByServer = new HashMap<>();
       for (BNotifyProtos.BNotifyClientState.ServerInfo serverInfo : state.getServerInfoList()) {
-        maxSeqByServer.put(serverInfo.getServerId(), serverInfo.getMaxSeq());
+        UsedSequences usedSeqs = UsedSequences.fromProto(serverInfo.getUsedSeqsList());
+        usedSeqsByServer.put(serverInfo.getServerId(), usedSeqs);
       }
-      return maxSeqByServer;
+      return usedSeqsByServer;
     } catch (FileNotFoundException exception) {
       Log.w(LOG_TAG, "state file does not exist; returning empty map", exception);
       return new HashMap<>();
@@ -219,13 +214,13 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private boolean setMaxSeqByServer(Map<ByteString, Long> maxSeqByServer) {
+  private boolean setUsedSeqsByServer(Map<ByteString, UsedSequences> usedSeqsByServer) {
     BNotifyProtos.BNotifyClientState.Builder stateBuilder =
         BNotifyProtos.BNotifyClientState.newBuilder();
-    for (Map.Entry<ByteString, Long> entry : maxSeqByServer.entrySet()) {
+    for (Map.Entry<ByteString, UsedSequences> entry : usedSeqsByServer.entrySet()) {
       stateBuilder.addServerInfo(BNotifyProtos.BNotifyClientState.ServerInfo.newBuilder()
           .setServerId(entry.getKey())
-          .setMaxSeq(entry.getValue()));
+          .addAllUsedSeqs(entry.getValue().toProto()));
     }
 
     File stateFile = new File(getCacheDir(), STATE_FILENAME);
