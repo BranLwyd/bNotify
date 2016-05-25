@@ -70,22 +70,28 @@ public class SettingsActivity extends Activity {
       }
 
       @Override
-      public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-      }
+      public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
 
       @Override
-      public void onTextChanged(CharSequence s, int start, int before, int count) {
-      }
+      public void onTextChanged(CharSequence s, int start, int before, int count) { }
+    });
+
+    senderIdEditText.addTextChangedListener(new TextWatcher() {
+
+      @Override
+      public void afterTextChanged(Editable s) { storeSenderId(s.toString()); }
+
+      @Override
+      public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+
+      @Override
+      public void onTextChanged(CharSequence s, int start, int before, int count) { }
     });
 
     // Initialize UI content.
-    SharedPreferences prefs = getGCMPreferences();
-    String senderId = prefs.getString(PROPERTY_SENDER_ID, null);
-    senderIdEditText.setText(senderId == null ? "" : senderId);
+    senderIdEditText.setText(getSenderId());
     passwordEditText.setText(getPassword());
-
-    String registrationId = getRegistrationId();
-    registrationIdTextView.setText(registrationId == null ? "" : registrationId);
+    registrationIdTextView.setText(getRegistrationId());
   }
 
   @Override
@@ -106,8 +112,6 @@ public class SettingsActivity extends Activity {
   }
 
   private void registerInBackground() {
-    final String senderId = senderIdEditText.getText().toString();
-
     AsyncTask<Void, Void, String> task = new AsyncTask<Void, Void, String>() {
 
       @Override
@@ -118,7 +122,7 @@ public class SettingsActivity extends Activity {
       @Override
       protected String doInBackground(Void... params) {
         try {
-          String registrationId = gcm.register(senderId);
+          String registrationId = gcm.register(getSenderId());
           storeRegistrationId(registrationId);
           return registrationId;
         } catch (IOException exception) {
@@ -135,6 +139,23 @@ public class SettingsActivity extends Activity {
     task.execute();
   }
 
+  private String getSenderId() {
+    SharedPreferences prefs = getGCMPreferences();
+    return prefs.getString(PROPERTY_SENDER_ID, null);
+  }
+
+  private void storeSenderId(String senderId) {
+    SharedPreferences prefs = getGCMPreferences();
+
+    if (prefs.getString(PROPERTY_SENDER_ID, "").equals(senderId)) {
+      return;
+    }
+
+    prefs.edit()
+      .putString(PROPERTY_SENDER_ID, senderId)
+      .apply();
+  }
+
   private String getRegistrationId() {
     SharedPreferences prefs = getGCMPreferences();
     return prefs.getString(PROPERTY_REGISTRATION_ID, null);
@@ -147,9 +168,9 @@ public class SettingsActivity extends Activity {
       return;
     }
 
-    SharedPreferences.Editor editor = prefs.edit();
-    editor.putString(PROPERTY_REGISTRATION_ID, registrationId);
-    editor.apply();
+    prefs.edit()
+      .putString(PROPERTY_REGISTRATION_ID, registrationId)
+      .apply();
 
     clearCachedKey();
   }
@@ -162,9 +183,13 @@ public class SettingsActivity extends Activity {
   private void storePassword(String password) {
     SharedPreferences prefs = getGCMPreferences();
 
-    SharedPreferences.Editor editor = prefs.edit();
-    editor.putString(PROPERTY_PASSWORD, password);
-    editor.apply();
+    if (prefs.getString(PROPERTY_PASSWORD, "").equals(password)) {
+      return;
+    }
+
+    prefs.edit()
+      .putString(PROPERTY_PASSWORD, password)
+      .apply();
 
     clearCachedKey();
   }
