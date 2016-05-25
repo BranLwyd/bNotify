@@ -128,8 +128,6 @@ public class GcmIntentService extends IntentService {
   private void showNotification(String title, String text) {
     NotificationManager notificationManager =
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-    PendingIntent contentIntent =
-        PendingIntent.getActivity(this, 0, new Intent(this, SettingsActivity.class), 0);
 
     int notificationId = getNextNotificationId();
     Notification notification = new Notification.Builder(this)
@@ -138,7 +136,6 @@ public class GcmIntentService extends IntentService {
         .setStyle(new Notification.BigTextStyle()
             .bigText(text))
         .setContentText(text)
-        .setContentIntent(contentIntent)
         .setVibrate(new long[]{0, 300, 200, 300})
         .build();
 
