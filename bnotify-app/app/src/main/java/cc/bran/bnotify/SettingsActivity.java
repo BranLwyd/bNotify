@@ -140,8 +140,7 @@ public class SettingsActivity extends Activity {
   }
 
   private String getSenderId() {
-    SharedPreferences prefs = getGCMPreferences();
-    return prefs.getString(PROPERTY_SENDER_ID, null);
+    return getGCMPreferences().getString(PROPERTY_SENDER_ID, "");
   }
 
   private void storeSenderId(String senderId) {
@@ -157,8 +156,7 @@ public class SettingsActivity extends Activity {
   }
 
   private String getRegistrationId() {
-    SharedPreferences prefs = getGCMPreferences();
-    return prefs.getString(PROPERTY_REGISTRATION_ID, null);
+    return getGCMPreferences().getString(PROPERTY_REGISTRATION_ID, "");
   }
 
   private void storeRegistrationId(String registrationId) {
@@ -176,8 +174,7 @@ public class SettingsActivity extends Activity {
   }
 
   private String getPassword() {
-    SharedPreferences prefs = getGCMPreferences();
-    return prefs.getString(PROPERTY_PASSWORD, "");
+    return getGCMPreferences().getString(PROPERTY_PASSWORD, "");
   }
 
   private void storePassword(String password) {
