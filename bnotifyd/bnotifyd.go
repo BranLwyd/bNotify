@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -35,13 +34,14 @@ const (
 	aesKeySize         = 16
 	pbkdfIterCount     = 400000
 	serverIDSize       = 16
-	maxWait            = 1024 * time.Second
 )
 
 var (
-	port             = flag.Int("port", 50051, "port to listen to RPCs on")
+	port             = flag.Int("port", 50051, "port to listen for RPCs on")
 	settingsFilename = flag.String("settings", "bnotify.conf", "filename of settings file")
 	stateFilename    = flag.String("state", "bnotify.state", "filename of state file")
+
+	waits = []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute}
 )
 
 type notificationService struct {
@@ -49,9 +49,6 @@ type notificationService struct {
 	apiKey         string
 	registrationID string
 	gcmCipher      cipher.AEAD
-
-	pending            int
-	pendingIncremented *sync.Cond // pendingIncremented.L protects pending
 }
 
 func (ns *notificationService) SendNotification(ctx context.Context, req *pb.SendNotificationRequest) (*pb.SendNotificationResponse, error) {
@@ -63,6 +60,8 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 		return nil, errors.New("notification missing text")
 	}
 
+	// Enqueue request into state.
+	var seq uint64
 	if err := ns.db.Batch(func(tx *bolt.Tx) error {
 		// Read server ID & allocate sequence number.
 		settingsBucket := tx.Bucket([]byte("settings"))
@@ -78,10 +77,11 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 		if messagesBucket == nil {
 			return errors.New("missing pending_messages bucket")
 		}
-		seq, err := messagesBucket.NextSequence()
+		theSeq, err := messagesBucket.NextSequence()
 		if err != nil {
 			return fmt.Errorf("could not allocate sequence number: %v", err)
 		}
+		seq = theSeq
 
 		// Marshal request.
 		plaintextMessage, err := proto.Marshal(&pb.Message{
@@ -99,15 +99,21 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 		nonce := append(serverID, key...)
 		message := ns.gcmCipher.Seal(nil, nonce, plaintextMessage, nil)
 
-		// Fill out final envelope proto & write to state.
-		envelopeData, err := proto.Marshal(&pb.Envelope{
+		// Fill out final envelope & pending payload protos, then write to storage.
+		payload, err := proto.Marshal(&pb.Envelope{
 			Message: message,
 			Nonce:   nonce,
 		})
 		if err != nil {
 			return fmt.Errorf("could not marshal envelope proto: %v", err)
 		}
-		if err := messagesBucket.Put(key, envelopeData); err != nil {
+		pendingPayload, err := proto.Marshal(&pb.PendingPayload{
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("could not marshal pending payload proto: %v", err)
+		}
+		if err := messagesBucket.Put(key, pendingPayload); err != nil {
 			return fmt.Errorf("could not write message to state: %v", err)
 		}
 		return nil
@@ -116,82 +122,89 @@ func (ns *notificationService) SendNotification(ctx context.Context, req *pb.Sen
 		return nil, errors.New("internal error")
 	}
 
-	// Notify sender goroutine.
-	ns.pendingIncremented.L.Lock()
-	defer ns.pendingIncremented.L.Unlock()
-	ns.pending++
-	ns.pendingIncremented.Signal()
-
+	// Kick off goroutine to actually send notification and return success.
+	go ns.sendPayload(seq)
 	return &pb.SendNotificationResponse{}, nil
 }
 
-func (ns *notificationService) startSendingNotifications() {
-	go func() {
-		wait := time.Second
+func (ns *notificationService) sendPayload(seq uint64) {
+	key := make([]byte, binary.Size(seq))
+	binary.BigEndian.PutUint64(key, seq)
 
-		for {
-			// Wait for a pending message to be available.
-			time.Sleep(wait)
-			ns.pendingIncremented.L.Lock()
-			for ns.pending == 0 {
-				ns.pendingIncremented.Wait()
+	for {
+		// Read & update payload in state.
+		var payload []byte
+		var sendAttempts int
+		if err := ns.db.Batch(func(tx *bolt.Tx) error {
+			messagesBucket := tx.Bucket([]byte("pending_messages"))
+			if messagesBucket == nil {
+				return errors.New("missing pending_messages bucket")
 			}
-			ns.pendingIncremented.L.Unlock()
-
-			// Read a message off the pending messages queue.
-			var key, payload []byte
-			if err := ns.db.View(func(tx *bolt.Tx) error {
-				messagesBucket := tx.Bucket([]byte("pending_messages"))
-				if messagesBucket == nil {
-					return errors.New("missing pending_messages bucket")
+			ppBytes := messagesBucket.Get(key)
+			if ppBytes == nil {
+				return errors.New("pending payload missing from state")
+			}
+			pendingPayload := &pb.PendingPayload{}
+			if err := proto.Unmarshal(ppBytes, pendingPayload); err != nil {
+				return fmt.Errorf("could not unmarshal pending payload: %v", err)
+			}
+			payload = pendingPayload.Payload
+			sendAttempts = int(pendingPayload.SendAttempts)
+			if sendAttempts < len(waits) {
+				pendingPayload.SendAttempts++
+				ppBytes, err := proto.Marshal(pendingPayload)
+				if err != nil {
+					return fmt.Errorf("could not marshal pending payload: %v", err)
 				}
-				k, p := messagesBucket.Cursor().First()
-				key = append(key, k...)
-				payload = append(payload, p...)
-				return nil
-			}); err != nil {
-				// This is unrecoverable and permanent, so exit.
-				log.Fatalf("Could not get notification: %v", err)
-			}
-			if key == nil {
-				// This indicates a logic error in the program, so exit.
-				log.Fatalf("Impossible condition: ns.pending is nonzero but no messages are available")
-			}
-
-			// Send notification.
-			if err := ns.postNotification(payload); err != nil {
-				log.Printf("Could not post notification: %v", err)
-				if wait < maxWait {
-					wait = 2 * wait
-					continue
+				if err := messagesBucket.Put(key, ppBytes); err != nil {
+					return fmt.Errorf("could not write pending payload: %v", err)
 				}
-				log.Printf("Failed to send notification too many times, dropping...")
-			}
-
-			// Remove sent notification from the pending queue.
-			if err := ns.db.Batch(func(tx *bolt.Tx) error {
-				messagesBucket := tx.Bucket([]byte("pending_messages"))
-				if messagesBucket == nil {
-					return errors.New("missing pending_messages bucket")
-				}
+			} else {
+				// We are out of retries.
 				if err := messagesBucket.Delete(key); err != nil {
-					return fmt.Errorf("error while deleting sent message: %v", err)
+					return fmt.Errorf("could not delete pending payload: %v", err)
 				}
-				return nil
-			}); err != nil {
-				log.Printf("Could not remove notification: %v", err)
-				continue
 			}
-
-			wait = time.Second
-			ns.pendingIncremented.L.Lock()
-			ns.pending--
-			ns.pendingIncremented.L.Unlock()
+			return nil
+		}); err != nil {
+			// Most/all errors that occur here are unrecoverable, so give up.
+			log.Printf("[%d] Could not read and update payload: %v", seq, err)
+			return
 		}
-	}()
+		if sendAttempts >= len(waits) {
+			log.Printf("[%d] Too many retries, giving up", seq)
+		}
+		waitTime := waits[sendAttempts]
+		if waitTime > 0 {
+			log.Printf("[%d] Waiting %v before retry", seq, waitTime)
+			time.Sleep(waitTime)
+		}
+
+		// Post notification.
+		if err := ns.postPayloadToGCM(payload); err != nil {
+			log.Printf("[%d] Could not post notification: %v", seq, err)
+			continue
+		}
+
+		// Remove sent notification from the pending queue.
+		if err := ns.db.Batch(func(tx *bolt.Tx) error {
+			messagesBucket := tx.Bucket([]byte("pending_messages"))
+			if messagesBucket == nil {
+				return errors.New("missing pending_messages bucket")
+			}
+			if err := messagesBucket.Delete(key); err != nil {
+				return fmt.Errorf("error while deleting sent message: %v", err)
+			}
+			return nil
+		}); err != nil {
+			// We'll return; I guess we'll try to clean up again whenever the server restarts.
+			log.Printf("[%d] Could not remove notification: %v", seq, err)
+		}
+		return
+	}
 }
 
-func (ns *notificationService) postNotification(payload []byte) error {
+func (ns *notificationService) postPayloadToGCM(payload []byte) error {
 	// Set up request.
 	values := url.Values{}
 	values.Set("restricted_package_name", bnotifyPackageName)
@@ -252,13 +265,16 @@ func main() {
 	defer db.Close()
 
 	var serverID []byte
-	var pending int
+	var pendingSeqs []uint64
 	if err := db.Update(func(tx *bolt.Tx) error {
 		messagesBucket, err := tx.CreateBucketIfNotExists([]byte("pending_messages"))
 		if err != nil {
 			return fmt.Errorf("could not create pending_messages bucket: %v", err)
 		}
-		pending = messagesBucket.Stats().KeyN
+		messagesBucket.ForEach(func(key, _ []byte) error {
+			pendingSeqs = append(pendingSeqs, binary.BigEndian.Uint64(key))
+			return nil
+		})
 
 		settingsBucket, err := tx.CreateBucketIfNotExists([]byte("settings"))
 		if err != nil {
@@ -297,9 +313,6 @@ func main() {
 		apiKey:         settings.ApiKey,
 		registrationID: settings.RegistrationId,
 		gcmCipher:      gcmCipher,
-
-		pending:            pending,
-		pendingIncremented: sync.NewCond(&sync.Mutex{}),
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
@@ -310,7 +323,9 @@ func main() {
 	pb.RegisterNotificationServiceServer(server, service)
 
 	// Begin serving.
-	log.Printf("Listening for requests on port %d...", *port)
-	service.startSendingNotifications()
+	for _, seq := range pendingSeqs {
+		go service.sendPayload(seq)
+	}
+	log.Printf("Listening for requests on port %d", *port)
 	server.Serve(listener)
 }

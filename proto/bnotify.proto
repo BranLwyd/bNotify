@@ -45,6 +45,13 @@ message Envelope {
   bytes nonce = 2;
 }
 
+message PendingPayload {
+  // The payload to send.
+  bytes payload = 1;
+  // The number of attempts to send this payload already.
+  int32 send_attempts = 2;
+}
+
 message BNotifySettings {
   // Google API key.
   string api_key = 1;
