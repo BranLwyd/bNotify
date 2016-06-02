@@ -3,10 +3,13 @@ package cc.bran.bnotify;
 import android.app.IntentService;
 import android.app.Notification;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.database.SQLException;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
 import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
@@ -14,10 +17,10 @@ import android.util.Log;
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 import com.google.common.io.ByteStreams;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -26,8 +29,6 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
-import java.util.HashMap;
-import java.util.Map;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -52,11 +53,42 @@ public class GcmIntentService extends IntentService {
   private static final int GCM_OVERHEAD_SIZE = 16;
   private static final int PBKDF2_ITERATION_COUNT = 400000;
   private static final String CACHED_KEY_FILENAME = "cache.key";
-  private static final String STATE_FILENAME = "state";
   private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
+  private static final char[] hexArray = "0123456789ABCDEF".toCharArray();
+
+  private final StateDatabase stateDatabase;
 
   public GcmIntentService() {
     super("GcmIntentService");
+    this.stateDatabase = new StateDatabase(this);
+  }
+
+  private static class StateDatabase extends SQLiteOpenHelper {
+
+    private static final String DATABASE_NAME = "state.db";
+    private static final int DATABASE_VERSION = 1;
+
+    public StateDatabase(Context context) {
+      super(context, DATABASE_NAME, null, DATABASE_VERSION);
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+      db.execSQL("CREATE TABLE servers (server_id BLOB PRIMARY KEY, server_state BLOB);");
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+      Log.w(LOG_TAG, String.format(
+              "Unexpected StateDatabase.onUpgrade call from version %d to version %d, ignoring",
+              oldVersion, newVersion));
+    }
+  }
+
+  @Override
+  public void onDestroy() {
+    super.onDestroy();
+    stateDatabase.close();
   }
 
   @Override
@@ -100,29 +132,22 @@ public class GcmIntentService extends IntentService {
   }
 
   private boolean checkSeq(BNotifyProtos.Message message) {
-    Map<ByteString, UsedSequences> usedSeqsByServer = getUsedSeqsByServer();
-    if (usedSeqsByServer == null) {
+    ByteString serverId = message.getServerId();
+    BNotifyProtos.ServerState serverState = getServerStateForId(serverId);
+    if (serverState == null) {
       return false;
     }
 
-    UsedSequences usedSeqs = usedSeqsByServer.get(message.getServerId());
-    boolean allowMessage;
-    if (usedSeqs == null) {
-      allowMessage = true;
-      usedSeqs = UsedSequences.createEmpty();
-      usedSeqs.use(message.getSeq());
-      usedSeqsByServer.put(message.getServerId(), usedSeqs);
-    } else {
-      allowMessage = usedSeqs.use(message.getSeq());
+    UsedSequences usedSeqs = UsedSequences.fromProto(serverState.getUsedSeqsList());
+    if (!usedSeqs.use(message.getSeq())) {
+      return false;
     }
 
-    if (allowMessage) {
-      if (!setUsedSeqsByServer(usedSeqsByServer)) {
-        return false;
-      }
-    }
-
-    return allowMessage;
+    serverState = serverState.toBuilder()
+            .clearUsedSeqs()
+            .addAllUsedSeqs(usedSeqs.toProto())
+            .build();
+    return setServerStateForId(serverId, serverState);
   }
 
   private void showNotification(String title, String text) {
@@ -188,45 +213,33 @@ public class GcmIntentService extends IntentService {
     }
   }
 
-  private Map<ByteString, UsedSequences> getUsedSeqsByServer() {
-    File stateFile = new File(getCacheDir(), STATE_FILENAME);
-    try (FileInputStream stateStream = new FileInputStream(stateFile)) {
-      byte[] stateBytes = ByteStreams.toByteArray(stateStream);
-      BNotifyProtos.BNotifyClientState state =
-          BNotifyProtos.BNotifyClientState.parseFrom(stateBytes);
-
-      Map<ByteString, UsedSequences> usedSeqsByServer = new HashMap<>();
-      for (BNotifyProtos.BNotifyClientState.ServerInfo serverInfo : state.getServerInfoList()) {
-        UsedSequences usedSeqs = UsedSequences.fromProto(serverInfo.getUsedSeqsList());
-        usedSeqsByServer.put(serverInfo.getServerId(), usedSeqs);
+  private BNotifyProtos.ServerState getServerStateForId(ByteString serverId) {
+    // Android's SQLite interface can't query on non-String-representable parameters... really? :(
+    SQLiteDatabase db = stateDatabase.getReadableDatabase();
+    String serverIdHex = toHex(serverId);
+    try (Cursor c = db.rawQuery(String.format(
+            "SELECT server_state FROM servers WHERE server_id = x'%s'", serverIdHex), null)) {
+      c.moveToFirst();
+      if (c.isAfterLast()) {
+        return BNotifyProtos.ServerState.getDefaultInstance();
       }
-      return usedSeqsByServer;
-    } catch (FileNotFoundException exception) {
-      Log.w(LOG_TAG, "state file does not exist; returning empty map", exception);
-      return new HashMap<>();
-    } catch (IOException exception) {
-      Log.w(LOG_TAG, "error reading state file", exception);
-      showNotification("bNotify error", String.format("Error reading state file: %s", exception));
+      return BNotifyProtos.ServerState.parseFrom(c.getBlob(0));
+    } catch (InvalidProtocolBufferException exception) {
+      Log.e(LOG_TAG, String.format("Error reading state for server %s", serverIdHex), exception);
+      showNotification("bNotify error",
+              String.format("Error reading state for server %s: %s", serverIdHex, exception));
       return null;
     }
   }
 
-  private boolean setUsedSeqsByServer(Map<ByteString, UsedSequences> usedSeqsByServer) {
-    BNotifyProtos.BNotifyClientState.Builder stateBuilder =
-        BNotifyProtos.BNotifyClientState.newBuilder();
-    for (Map.Entry<ByteString, UsedSequences> entry : usedSeqsByServer.entrySet()) {
-      stateBuilder.addServerInfo(BNotifyProtos.BNotifyClientState.ServerInfo.newBuilder()
-          .setServerId(entry.getKey())
-          .addAllUsedSeqs(entry.getValue().toProto()));
-    }
-
-    File stateFile = new File(getCacheDir(), STATE_FILENAME);
-    try (FileOutputStream stateStream = new FileOutputStream(stateFile)) {
-      stateStream.write(stateBuilder.build().toByteArray());
+  private boolean setServerStateForId(ByteString serverId, BNotifyProtos.ServerState serverState) {
+    SQLiteDatabase db = stateDatabase.getWritableDatabase();
+    String serverIdHex = toHex(serverId);
+    try {
+      db.execSQL(String.format("INSERT OR REPLACE INTO servers VALUES (x'%s', x'%s')",
+              serverIdHex, toHex(serverState.toByteString())));
       return true;
-    } catch (IOException exception) {
-      Log.w(LOG_TAG, "error writing state file", exception);
-      showNotification("bNotify error", String.format("Error writing state file: %s", exception));
+    } catch (SQLException exception) {
       return false;
     }
   }
@@ -258,5 +271,15 @@ public class GcmIntentService extends IntentService {
 
   private SharedPreferences getGCMPreferences() {
     return getSharedPreferences(SettingsActivity.class.getSimpleName(), Context.MODE_PRIVATE);
+  }
+
+  private static String toHex(ByteString bs) {
+    char[] resultChars = new char[2 * bs.size()];
+    for (int i = 0; i < bs.size(); i++) {
+      int b = bs.byteAt(i) & 0xFF;
+      resultChars[2 * i] = hexArray[b >>> 4];
+      resultChars[2 * i + 1] = hexArray[b & 0x0F];
+    }
+    return new String(resultChars);
   }
 }

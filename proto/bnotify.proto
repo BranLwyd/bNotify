@@ -68,13 +68,8 @@ message SequenceRange {
   uint64 max = 2;
 }
 
-message BNotifyClientState {
-  // Per-server information.
-  message ServerInfo {
-    // Server ID.
-    bytes server_id = 1;
-    // Maximum sequence seen from server.
-    repeated SequenceRange used_seqs = 2;
-  }
-  repeated ServerInfo server_info = 1;
+// Per-server information stored by client.
+message ServerState {
+  // Maximum sequence seen from server.
+  repeated SequenceRange used_seqs = 1;
 }
