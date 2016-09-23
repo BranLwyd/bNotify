@@ -173,6 +173,7 @@ func (ns *notificationService) sendPayload(seq uint64) {
 		}
 		if sendAttempts >= len(waits) {
 			log.Printf("[%d] Too many retries, giving up", seq)
+			return
 		}
 		waitTime := waits[sendAttempts]
 		if waitTime > 0 {
