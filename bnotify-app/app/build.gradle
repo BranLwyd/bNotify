@@ -2,7 +2,7 @@ apply plugin: 'com.android.application'
 
 android {
     compileSdkVersion 23
-    buildToolsVersion '22.0.1'
+    buildToolsVersion '26.0.2'
     defaultConfig {
         applicationId "cc.bran.bnotify"
         minSdkVersion 23
@@ -24,6 +24,6 @@ android {
 
 dependencies {
     compile 'com.google.android.gms:play-services:8.4.0'
-    compile 'com.google.protobuf:protobuf-java:3.0.0-beta-2'
+    compile 'com.google.protobuf:protobuf-java:3.4.0'
     compile 'com.google.guava:guava:18.0'
 }
