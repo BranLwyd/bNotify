@@ -1,27 +1,26 @@
 package cc.bran.bnotify;
 
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.view.View;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
-import com.google.android.gms.gcm.GoogleCloudMessaging;
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.Task;
+import com.google.firebase.iid.FirebaseInstanceId;
+import com.google.firebase.iid.InstanceIdResult;
 
 import java.io.File;
-import java.io.IOException;
 
 public class SettingsActivity extends Activity {
 
@@ -30,8 +29,8 @@ public class SettingsActivity extends Activity {
   private static final String PROPERTY_PASSWORD = "password";
   private static final String CACHED_KEY_FILENAME = "cache.key";
   private static final int PLAY_SERVICES_RESOLUTION_REQUEST = 9000;
+  private static final String NOTIFICATION_CHANNEL_ID = "bnotify_notifications";
 
-  private GoogleCloudMessaging gcm;
   private EditText senderIdEditText;
   private EditText passwordEditText;
   private TextView registrationIdTextView;
@@ -47,21 +46,11 @@ public class SettingsActivity extends Activity {
     }
 
     // Initialize member variables.
-    gcm = GoogleCloudMessaging.getInstance(this);
     senderIdEditText = (EditText) findViewById(R.id.sender_id);
     passwordEditText = (EditText) findViewById(R.id.password);
     registrationIdTextView = (TextView) findViewById(R.id.registration_id);
-    Button registerButton = (Button) findViewById(R.id.register);
 
     // Wire up event handlers.
-    registerButton.setOnClickListener(new View.OnClickListener() {
-
-      @Override
-      public void onClick(View view) {
-        registerInBackground();
-      }
-    });
-
     passwordEditText.addTextChangedListener(new TextWatcher() {
 
       @Override
@@ -91,7 +80,26 @@ public class SettingsActivity extends Activity {
     // Initialize UI content.
     senderIdEditText.setText(getSenderId());
     passwordEditText.setText(getPassword());
-    registrationIdTextView.setText(getRegistrationId());
+    registrationIdTextView.setText("Loading...");
+
+    FirebaseInstanceId.getInstance().getInstanceId()
+            .addOnCompleteListener(new OnCompleteListener<InstanceIdResult>() {
+              @Override public void onComplete(Task<InstanceIdResult> task) {
+                if (!task.isSuccessful()) {
+                  registrationIdTextView.setText(String.format("Could not load registration ID: %s", task.getException()));
+                  return;
+                }
+                String registrationId = task.getResult().getToken();
+                storeRegistrationId(registrationId);
+                registrationIdTextView.setText(registrationId);
+              }
+            });
+
+    // Create a notification channel.
+    NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_DEFAULT);
+    channel.setDescription(getString(R.string.notification_channel_description));
+    channel.setVibrationPattern(new long[]{0, 300, 200, 300});
+    getSystemService(NotificationManager.class).createNotificationChannel(channel);
   }
 
   @Override
@@ -111,34 +119,6 @@ public class SettingsActivity extends Activity {
     return super.onOptionsItemSelected(item);
   }
 
-  private void registerInBackground() {
-    AsyncTask<Void, Void, String> task = new AsyncTask<Void, Void, String>() {
-
-      @Override
-      protected void onPreExecute() {
-        registrationIdTextView.setText("Registering...");
-      }
-
-      @Override
-      protected String doInBackground(Void... params) {
-        try {
-          String registrationId = gcm.register(getSenderId());
-          storeRegistrationId(registrationId);
-          return registrationId;
-        } catch (IOException exception) {
-          return String.format("Error: %s", exception.getMessage());
-        }
-      }
-
-      @Override
-      protected void onPostExecute(String message) {
-        registrationIdTextView.setText(message);
-      }
-    };
-
-    task.execute();
-  }
-
   private String getSenderId() {
     return getGCMPreferences().getString(PROPERTY_SENDER_ID, "");
   }
@@ -153,10 +133,6 @@ public class SettingsActivity extends Activity {
     prefs.edit()
       .putString(PROPERTY_SENDER_ID, senderId)
       .apply();
-  }
-
-  private String getRegistrationId() {
-    return getGCMPreferences().getString(PROPERTY_REGISTRATION_ID, "");
   }
 
   private void storeRegistrationId(String registrationId) {

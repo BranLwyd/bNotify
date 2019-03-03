@@ -1,21 +1,19 @@
 package cc.bran.bnotify;
 
-import android.app.IntentService;
+import com.google.firebase.messaging.FirebaseMessagingService;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.SQLException;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
-import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
 
-import com.google.android.gms.gcm.GoogleCloudMessaging;
 import com.google.common.io.ByteStreams;
+import com.google.firebase.messaging.RemoteMessage;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 
@@ -27,7 +25,6 @@ import java.nio.charset.Charset;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
 import java.security.spec.InvalidKeySpecException;
 
 import javax.crypto.BadPaddingException;
@@ -42,9 +39,9 @@ import javax.crypto.spec.SecretKeySpec;
 
 import cc.bran.bnotify.proto.BNotifyProtos;
 
-public class GcmIntentService extends IntentService {
+public class FcmListenerService extends FirebaseMessagingService {
 
-  private static final String LOG_TAG = "GcmIntentService";
+  private static final String LOG_TAG = "FcmListenerService";
   private static final String PROPERTY_REGISTRATION_ID = "registration_id";
   private static final String PROPERTY_PASSWORD = "password";
   private static final String PROPERTY_NEXT_NOTIFICATION_ID = "next_notification_id";
@@ -55,11 +52,11 @@ public class GcmIntentService extends IntentService {
   private static final String CACHED_KEY_FILENAME = "cache.key";
   private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA1";
   private static final char[] hexArray = "0123456789ABCDEF".toCharArray();
+  private static final String NOTIFICATION_CHANNEL_ID = "bnotify_notifications";
 
   private final StateDatabase stateDatabase;
 
-  public GcmIntentService() {
-    super("GcmIntentService");
+  public FcmListenerService() {
     this.stateDatabase = new StateDatabase(this);
   }
 
@@ -92,15 +89,11 @@ public class GcmIntentService extends IntentService {
   }
 
   @Override
-  protected void onHandleIntent(Intent intent) {
+  public void onMessageReceived(RemoteMessage remoteMessage) {
+    Log.d(LOG_TAG, "From: " + remoteMessage.getFrom()); // XXX
     try {
-      GoogleCloudMessaging gcm = GoogleCloudMessaging.getInstance(this);
-      Bundle extras = intent.getExtras();
-      String messageType = gcm.getMessageType(intent);
-
-      if (GoogleCloudMessaging.MESSAGE_TYPE_MESSAGE.equals(messageType) && !extras.isEmpty()) {
-        String payload = extras.getString(PAYLOAD_KEY);
-
+      String payload = remoteMessage.getData().get(PAYLOAD_KEY);
+      if (payload != null) {
         // Base64-decode & parse into an Envelope.
         byte[] envelopeBytes = Base64.decode(payload, Base64.DEFAULT);
         BNotifyProtos.Envelope envelope = BNotifyProtos.Envelope.parseFrom(envelopeBytes);
@@ -111,7 +104,7 @@ public class GcmIntentService extends IntentService {
 
         // Decrypt the message & parse into a Notification.
         SecretKey key = getKey();
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key, gcmParameterSpec);
         byte[] messageBytes = cipher.doFinal(envelope.getMessage().toByteArray());
         BNotifyProtos.Message message = BNotifyProtos.Message.parseFrom(messageBytes);
@@ -123,11 +116,8 @@ public class GcmIntentService extends IntentService {
       }
     } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException
         | NoSuchPaddingException | InvalidKeyException | BadPaddingException
-        | InvalidAlgorithmParameterException | IllegalBlockSizeException | IllegalArgumentException
-        | NoSuchProviderException exception) {
+        | InvalidAlgorithmParameterException | IllegalBlockSizeException | IllegalArgumentException exception) {
       Log.e(LOG_TAG, "Error showing notification", exception);
-    } finally {
-      GcmBroadcastReceiver.completeWakefulIntent(intent);
     }
   }
 
@@ -155,13 +145,12 @@ public class GcmIntentService extends IntentService {
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 
     int notificationId = getNextNotificationId();
-    Notification notification = new Notification.Builder(this)
+    Notification notification = new Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
         .setSmallIcon(R.drawable.logo_white)
         .setContentTitle(title)
         .setStyle(new Notification.BigTextStyle()
             .bigText(text))
         .setContentText(text)
-        .setVibrate(new long[]{0, 300, 200, 300})
         .build();
 
     notificationManager.notify(notificationId, notification);

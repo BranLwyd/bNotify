@@ -1,0 +1,42 @@
+{
+  "project_info": {
+    "project_number": "344163801175",
+    "firebase_url": "https://bnotify-2dce7.firebaseio.com",
+    "project_id": "bnotify-2dce7",
+    "storage_bucket": "bnotify-2dce7.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:344163801175:android:e3d81f2b6a6ac506",
+        "android_client_info": {
+          "package_name": "cc.bran.bnotify"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "344163801175-evjjeg0ptofrmsq6787o574fts75hhsj.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWHzrbOZUGOswZBJSjz5yJaz4nZ_sAEnA"
+        }
+      ],
+      "services": {
+        "analytics_service": {
+          "status": 1
+        },
+        "appinvite_service": {
+          "status": 1,
+          "other_platform_oauth_client": []
+        },
+        "ads_service": {
+          "status": 2
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

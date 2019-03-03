@@ -30,7 +30,7 @@ import (
 
 const (
 	bnotifyPackageName = "cc.bran.bnotify"
-	gcmSendAddress     = "https://android.googleapis.com/gcm/send"
+	fcmSendAddress     = "https://fcm.googleapis.com/fcm/send"
 	aesKeySize         = 16
 	pbkdfIterCount     = 400000
 	serverIDSize       = 16
@@ -182,7 +182,7 @@ func (ns *notificationService) sendPayload(seq uint64) {
 		}
 
 		// Post notification.
-		if err := ns.postPayloadToGCM(payload); err != nil {
+		if err := ns.postPayloadToFCM(payload); err != nil {
 			log.Printf("[%d] Could not post notification: %v", seq, err)
 			continue
 		}
@@ -205,14 +205,14 @@ func (ns *notificationService) sendPayload(seq uint64) {
 	}
 }
 
-func (ns *notificationService) postPayloadToGCM(payload []byte) error {
+func (ns *notificationService) postPayloadToFCM(payload []byte) error {
 	// Set up request.
 	values := url.Values{}
 	values.Set("restricted_package_name", bnotifyPackageName)
 	values.Set("registration_id", ns.registrationID)
 	values.Set("data.payload", base64.StdEncoding.EncodeToString(payload))
 
-	req, err := http.NewRequest("POST", gcmSendAddress, strings.NewReader(values.Encode()))
+	req, err := http.NewRequest("POST", fcmSendAddress, strings.NewReader(values.Encode()))
 	if err != nil {
 		return err
 	}

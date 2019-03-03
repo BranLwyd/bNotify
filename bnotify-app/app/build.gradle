@@ -4,7 +4,7 @@ android {
     compileSdkVersion 28
     defaultConfig {
         applicationId "cc.bran.bnotify"
-        minSdkVersion 23
+        minSdkVersion 28
         targetSdkVersion 28
         versionCode 1
         versionName "1.0"
@@ -22,7 +22,10 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.android.gms:play-services:8.4.0'
+    implementation 'com.google.firebase:firebase-core:16.0.1'
+    implementation 'com.google.firebase:firebase-messaging:17.3.4'
     implementation 'com.google.protobuf:protobuf-java:3.4.0'
     implementation 'com.google.guava:guava:18.0'
 }
+
+apply plugin: 'com.google.gms.google-services'
